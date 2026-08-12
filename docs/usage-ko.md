@@ -17,7 +17,7 @@ claude
 
 ## 설치
 
-이미 Claude Code와 Codex가 설치된 노트북 또는 VPS:
+이미 Claude Code와 Codex가 설치된 컴퓨터 또는 서버:
 
 ```bash
 git clone https://github.com/woongjaejung/claudex5-engineering-harness.git
@@ -26,7 +26,7 @@ cd claudex5-engineering-harness
 ./verify.sh --strict
 ```
 
-새 Debian/Ubuntu VPS:
+새 Debian/Ubuntu 컴퓨터 또는 서버:
 
 ```bash
 git clone https://github.com/woongjaejung/claudex5-engineering-harness.git
@@ -37,7 +37,7 @@ codex login --device-auth
 ./verify.sh --strict
 ```
 
-Claude와 ChatGPT 로그인은 각 머신에서 한 번씩 직접 해야 합니다. 노트북 인증 파일은 VPS로 복사되지 않습니다.
+Claude와 ChatGPT 로그인은 각 머신에서 한 번씩 직접 해야 합니다. 다른 컴퓨터의 인증 파일은 새 컴퓨터나 서버로 복사되지 않습니다.
 
 ## 자연스럽게 자동 오케스트레이션시키는 프롬프트
 
@@ -158,7 +158,7 @@ git pull --ff-only
 /codex:setup
 ```
 
-VPS 인증이 없을 때:
+컴퓨터 또는 서버에 인증이 없을 때:
 
 ```bash
 claude

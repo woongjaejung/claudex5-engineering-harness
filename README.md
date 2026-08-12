@@ -78,7 +78,7 @@ The recommended authentication mode is a Claude.ai subscription for Claude Code 
 
 ## Quick start
 
-### Existing laptop or VPS
+### Existing computer or server
 
 If Claude Code and Codex are already installed:
 
@@ -91,7 +91,7 @@ cd claudex5-engineering-harness
 
 The installer backs up each file it may change, creates namespaced agent links, merges managed instruction blocks, enables the official OpenAI Codex Claude Code plugin, and runs verification.
 
-### Fresh Debian or Ubuntu VPS
+### Fresh Debian or Ubuntu computer or server
 
 ```bash
 git clone https://github.com/woongjaejung/claudex5-engineering-harness.git
@@ -99,7 +99,7 @@ cd claudex5-engineering-harness
 ./install.sh --bootstrap
 ```
 
-Then authenticate once on that VPS:
+Then authenticate once on that machine:
 
 ```bash
 claude
@@ -107,15 +107,15 @@ codex login --device-auth
 ./verify.sh --strict
 ```
 
-`--bootstrap` installs missing prerequisites from official distribution sources. Claude Code and Codex versions are pinned in the script for reproducibility; update the repository before bootstrapping a new server. The upstream Claude installer, npm registry, and plugin marketplace remain external supply-chain trust boundaries, so review `bootstrap-vps.sh` before running it on a sensitive host. It does **not** transfer laptop credentials.
+`--bootstrap` installs missing prerequisites from official distribution sources. Claude Code and Codex versions are pinned in the script for reproducibility; update the repository before bootstrapping a new machine. The upstream Claude installer, npm registry, and plugin marketplace remain external supply-chain trust boundaries, so review `bootstrap-system.sh` before running it on a sensitive system. It does **not** transfer credentials from another machine.
 
 ```mermaid
 flowchart LR
     GH["Claudex5 Git repository<br/>public configuration only"] --> L["Laptop<br/>./install.sh"]
-    GH --> V["VPS<br/>./install.sh --bootstrap"]
+    GH --> V["Fresh computer or server<br/>./install.sh --bootstrap"]
     L --> LC["~/.claude + ~/.codex<br/>merged global policy"]
     V --> VC["~/.claude + ~/.codex<br/>merged global policy"]
-    LA["Claude.ai + ChatGPT login<br/>stored on laptop"] -. "never copied" .- VA["Claude.ai + ChatGPT login<br/>performed separately on VPS"]
+    LA["Claude.ai + ChatGPT login<br/>stored on one machine"] -. "never copied" .- VA["Claude.ai + ChatGPT login<br/>performed separately on each machine"]
     LC --> LA
     VC --> VA
 ```
@@ -326,7 +326,7 @@ codex login status
 ./verify.sh --strict
 ```
 
-### Authentication is missing on a VPS
+### Authentication is missing on a computer or server
 
 ```bash
 claude

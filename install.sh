@@ -31,15 +31,15 @@ target_home="$(claudex5_validate_home "$target_home")"
 [[ ! -L "$target_home/.codex" ]] || claudex5_die "refusing symlinked configuration directory: $target_home/.codex"
 
 if [[ "$bootstrap" -eq 1 ]]; then
-  "$repo_root/bootstrap-vps.sh"
+  "$repo_root/bootstrap-system.sh"
   export PATH="$target_home/.local/bin:$PATH"
 fi
 
 python_bin="$(claudex5_find_python)" || claudex5_die "Python 3.11 or newer is required"
 if [[ "$skip_runtime" -eq 0 ]]; then
-  claudex5_node_version_ok || claudex5_die "Node.js 18.18 or newer is required; use --bootstrap on a new VPS"
-  command -v claude >/dev/null 2>&1 || claudex5_die "Claude Code is required; use --bootstrap on a new VPS"
-  command -v codex >/dev/null 2>&1 || claudex5_die "Codex CLI is required; use --bootstrap on a new VPS"
+  claudex5_node_version_ok || claudex5_die "Node.js 18.18 or newer is required; use --bootstrap on a new Debian/Ubuntu system"
+  command -v claude >/dev/null 2>&1 || claudex5_die "Claude Code is required; use --bootstrap on a new Debian/Ubuntu system"
+  command -v codex >/dev/null 2>&1 || claudex5_die "Codex CLI is required; use --bootstrap on a new Debian/Ubuntu system"
 fi
 
 backup_dir="$(claudex5_backup_configs "$target_home")"

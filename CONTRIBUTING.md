@@ -16,7 +16,7 @@ python3 -m unittest discover -s tests -v
 bash tests/test_install.sh
 bash tests/test_bootstrap.sh
 bash tests/test_verify.sh
-bash -n install.sh link.sh verify.sh uninstall.sh bootstrap-vps.sh scripts/common.sh
+bash -n install.sh link.sh verify.sh uninstall.sh bootstrap-system.sh scripts/common.sh
 ./verify.sh --secrets-only
 git diff --check
 ```
@@ -32,4 +32,3 @@ Integration tests must use an isolated temporary home. Do not point tests at you
 - Confirm `git status --short`, staged diff, and the secret scan before pushing.
 
 Human-facing prose should be reviewed as instructions, not locked to brittle exact-text tests. Executable scripts and configuration merges require behavior tests.
-

@@ -6,7 +6,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) dry_run=1; shift ;;
     -h|--help)
-      printf '%s\n' "Usage: ./bootstrap-vps.sh [--dry-run]"
+      printf '%s\n' "Usage: ./bootstrap-system.sh [--dry-run]"
       exit 0
       ;;
     *) printf 'ERROR: unknown argument: %s\n' "$1" >&2; exit 1 ;;
@@ -20,7 +20,7 @@ if [[ -r "$os_release_file" ]]; then
   os_id="$(awk -F= '$1=="ID" {gsub(/"/, "", $2); print $2}' "$os_release_file")"
 fi
 
-printf '%s\n' "Claudex5 VPS bootstrap plan"
+printf '%s\n' "Claudex5 Debian/Ubuntu bootstrap plan"
 claude_version="${CLAUDEX5_CLAUDE_VERSION:-2.1.226}"
 codex_version="${CLAUDEX5_CODEX_VERSION:-0.147.0}"
 

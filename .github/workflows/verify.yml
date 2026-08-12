@@ -21,7 +21,7 @@ jobs:
           python-version: "3.11"
 
       - name: Check shell syntax
-        run: bash -n install.sh link.sh verify.sh uninstall.sh bootstrap-vps.sh scripts/common.sh tests/*.sh
+        run: bash -n install.sh link.sh verify.sh uninstall.sh bootstrap-system.sh scripts/common.sh tests/*.sh
 
       - name: Run Python tests
         run: python3 -m unittest discover -s tests -v
@@ -31,7 +31,7 @@ jobs:
           CLAUDEX5_TEST_PYTHON: python3
         run: bash tests/test_install.sh
 
-      - name: Run VPS bootstrap dry-run tests
+      - name: Run system bootstrap dry-run tests
         run: bash tests/test_bootstrap.sh
 
       - name: Run credential safety tests
