@@ -4,7 +4,7 @@ A global, installable orchestration policy for using Claude Code and OpenAI Code
 
 > **Unofficial community project.** This repository is not affiliated with, endorsed by, or maintained by Anthropic or OpenAI.
 
-[한국어 사용 안내](docs/usage-ko.md) · [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md)
+[Korean usage guide](docs/usage-ko.md) · [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md)
 
 ## What this is
 
@@ -132,7 +132,7 @@ claude
 Then ask naturally:
 
 ```text
-이 로그인 기능을 구현하고 테스트해줘.
+Implement this login feature and test it.
 ```
 
 For a complex request, the global instructions tell the main session to investigate, implement, use independent reviews when warranted, and run deterministic checks. A small question or one-line edit stays direct.
@@ -140,8 +140,8 @@ For a complex request, the global instructions tell the main session to investig
 Good prompts still improve routing because they provide an outcome and constraints:
 
 ```text
-결제 재시도 로직을 구현해줘. 기존 API 호환성을 유지하고,
-동시 요청과 부분 실패를 검토한 뒤 테스트 결과까지 알려줘.
+Implement the payment retry logic while preserving API compatibility.
+Review concurrent requests and partial failures, then report the test results.
 ```
 
 ## Explicit role calls
@@ -157,8 +157,8 @@ claude --agent harness-orchestrator
 Or ask inside an existing session:
 
 ```text
-harness-researcher로 현재 인증 흐름을 읽기 전용 조사한 뒤,
-harness-implementer에게 명확한 파일 범위와 완료 조건을 넘겨줘.
+Use harness-researcher to inspect the current authentication flow without making changes,
+then give harness-implementer explicit file boundaries and acceptance criteria.
 ```
 
 ### Manual Claude fallbacks
@@ -176,9 +176,9 @@ Use these only when Fable/Sonnet is unavailable, a prior role returned evidence 
 Inside Claude Code, use the official plugin commands:
 
 ```text
-/codex:rescue --fresh --model gpt-5.6-sol --effort high 이 장애 원인과 대안을 독립적으로 조사해줘
+/codex:rescue --fresh --model gpt-5.6-sol --effort high Independently investigate the cause of this failure and possible alternatives.
 /codex:review --background
-/codex:adversarial-review --background 인증 우회, 데이터 손실, 경쟁 조건, 롤백 실패를 집중 검토해줘
+/codex:adversarial-review --background Focus on authentication bypasses, data loss, race conditions, and rollback failures.
 /codex:status
 /codex:result
 ```
@@ -191,7 +191,7 @@ The official plugin 1.0.0 accepts reasoning effort only through `xhigh`. For an 
 codex exec --ephemeral --model gpt-5.6-luna \
   -c 'model_reasoning_effort="max"' \
   --sandbox workspace-write \
-  "이 파일 범위와 완료 조건 안에서만 대안 구현하고 지정한 테스트를 실행해줘."
+  "Implement an alternative only within these file boundaries and acceptance criteria, then run the specified tests."
 ```
 
 Use `--sandbox read-only` instead when the task is research or review. Do not describe a plugin `xhigh` run as `max`.
