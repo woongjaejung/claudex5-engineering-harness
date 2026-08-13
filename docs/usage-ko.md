@@ -28,6 +28,19 @@ Superpowers가 `subagent-driven-development` 또는 `executing-plans`를 선택�
 
 `fable-advisor`처럼 자체 구현 lane과 모델 선택표를 가진 다른 오케스트레이션 플러그인이 켜져 있으면 Claudex5 라우팅을 대신할 수 있습니다. 이 경우 Superpowers는 그대로 두고 경쟁 라우터만 비활성화하는 것을 권장합니다.
 
+Claudex5 Claude 서브에이전트는 실행 목록에 역할, 모델, 추론 수준과 작업 설명을 함께 표시합니다.
+
+```text
+harness-researcher [Claude Sonnet 5 · high] · 인증 흐름 조사
+harness-implementer [Claude Sonnet 5 · high] · Task 1 구현
+harness-architecture-reviewer [Claude Opus 5 · high] · 구조 검토
+harness-judge [Claude Fable 5 · high] · 리뷰 근거 판정
+```
+
+Claude Code에서 `/agents`를 열면 실행 중인 서브에이전트를, `/tasks`를 열면 현재 세션의 백그라운드 작업을 확인할 수 있습니다. 이 표시는 이름이 정확히 `harness-*`인 Claudex5 역할에만 적용되므로 Superpowers와 다른 플러그인 에이전트의 기본 표시는 바뀌지 않습니다.
+
+공식 Codex 플러그인의 Sol·Luna·Spark 작업은 Claude 커스텀 서브에이전트가 아니므로 같은 상태줄 매핑을 사용하지 않습니다. 대신 호출 화면이 작업 설명을 지원하면 `[Codex Sol · high]`, `[Codex Luna · max]`, `[Codex-Spark]` 접두사를 붙입니다.
+
 ## 설치
 
 이미 Claude Code와 Codex가 설치된 컴퓨터 또는 서버:
@@ -195,6 +208,7 @@ git pull --ff-only origin main
 ```
 
 `git pull`은 공개 설정 파일을 업데이트하고, `./install.sh`는 해당 머신의 현재 계정으로 Spark 접근 여부를 다시 확인한 뒤 전역 지침과 역할을 안전하게 병합합니다. 인증은 머신별로 그대로 유지되며 다른 장비로 복사되지 않습니다.
+모델 표시 렌더러도 이때 `~/.claude/statuslines/claudex5-subagent-models.py`에 연결됩니다. 적용 후 Claude Code를 다시 시작하고 `/agents`에서 확인합니다.
 
 ## 제거
 
@@ -204,6 +218,7 @@ git pull --ff-only origin main
 
 사용자 지침과 기존 설정은 남기고, 이 저장소가 관리하는 링크·지침 블록·Codex 역할 표만 제거합니다. Claude, Codex, 로그인과 플러그인은 삭제하지 않습니다.
 조건부 Spark 링크와 역할 표도 하네스가 만든 경우에만 함께 제거합니다.
+모델 표시용 `subagentStatusLine`도 여전히 Claudex5 명령을 가리킬 때만 제거하며, 사용자가 다른 렌더러로 바꾼 설정은 보존합니다.
 
 ## 문제 해결
 
@@ -212,6 +227,15 @@ git pull --ff-only origin main
 ```bash
 ./verify.sh
 ```
+
+Claudex5 역할 이름은 보이지만 모델 표시가 없을 때:
+
+```bash
+./install.sh
+./verify.sh --strict
+```
+
+그 뒤 Claude Code를 다시 시작하고 `/agents`를 엽니다. `foreign subagentStatusLine` 경고가 나오면 기존 사용자 렌더러가 있어서 Claudex5가 덮어쓰지 않은 것입니다. 둘 중 어떤 표시를 사용할지 결정해 `~/.claude/settings.json`의 `subagentStatusLine`을 직접 정리한 뒤 설치를 다시 실행합니다. 기존 상단 상태줄인 `statusLine`은 별도 설정이므로 그대로 유지됩니다.
 
 `fable-advisor`가 Claudex5 역할 대신 Grok 또는 자체 Codex lane을 호출할 때:
 

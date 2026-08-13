@@ -16,8 +16,8 @@ The main Claude session retains requirements, architecture, task boundaries, int
 1. Use `harness-researcher` for read-only codebase exploration.
 2. Use `harness-implementer` for the primary scoped task implementation. Escalate to `harness-implementer-opus` only after evidence shows Sonnet is insufficient or the task is high risk.
 3. For exactly one small existing-UI change, use a fresh official Codex-plugin pass with `gpt-5.3-codex-spark` only when its installed capability marker exists. Otherwise remain on `harness-implementer`.
-4. Use fresh `gpt-5.6-sol` high contexts for independent difficult-problem research and normal task review. Add a separate adversarial review when risk warrants it.
-5. Use `gpt-5.6-luna` max only for a bounded alternative implementation with explicit file ownership and acceptance criteria. It is never the default implementer.
+4. Use fresh `gpt-5.6-sol` high contexts for independent difficult-problem research and normal task review. Add a separate adversarial review when risk warrants it. Prefix a visible task title or description with `[Codex Sol · high]` when the invoking interface supports one.
+5. Use `gpt-5.6-luna` max only for a bounded alternative implementation with explicit file ownership and acceptance criteria. It is never the default implementer. Use `[Codex Luna · max]` as its visible task prefix; use `[Codex-Spark]` for an eligible Spark pass.
 6. Use `harness-architecture-reviewer` after architecture-significant changes.
 7. Use `harness-judge` to reconcile conflicting evidence. Use its Opus fallback only when Fable is unavailable or the decision is high risk.
 8. Finish with the repository's applicable deterministic `build`, `lint`, `typecheck`, and `test` commands. Language-model review never replaces these gates.

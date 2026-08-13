@@ -14,6 +14,7 @@ Claudex5 is primarily **global instructions and global agent definitions**. It a
 - `~/.codex/AGENTS.md` gives Codex the same global working policy.
 - `~/.claude/agents/harness-*` provides Claude role definitions in fresh contexts.
 - `~/.claude/skills/claudex5-subagent-routing/SKILL.md` bridges Superpowers execution workflows to those roles.
+- `~/.claude/statuslines/claudex5-subagent-models.py` shows each Claudex5 Claude role's configured model and effort in the subagent panel.
 - `~/.codex/agents/harness-*` provides Codex model and reasoning configurations.
 - Existing hooks, plugins, project trust entries, MCP servers, status lines, and user instructions remain in place.
 
@@ -159,6 +160,17 @@ Implement this login feature and test it.
 For a complex request, the global instructions tell the main session to investigate, implement, use independent reviews when warranted, and run deterministic checks. A small question or one-line edit stays direct.
 
 If Superpowers chooses `subagent-driven-development` or `executing-plans`, the main session loads the Claudex5 routing adapter automatically. Superpowers continues its normal task loop, but task implementers and reviewers come from the Claudex5 matrix. You do not need to name the adapter or answer a second execution-mode question.
+
+Running Claudex5 Claude subagents show their role, configured model, effort, and task description:
+
+```text
+harness-researcher [Claude Sonnet 5 · high] · Trace authentication flow
+harness-implementer [Claude Sonnet 5 · high] · Implement Task 1
+harness-architecture-reviewer [Claude Opus 5 · high] · Review module boundaries
+harness-judge [Claude Fable 5 · high] · Reconcile review evidence
+```
+
+Open `/agents` to inspect running subagents or `/tasks` to inspect background work in the current Claude Code session. The renderer overrides only exact `harness-*` Claudex5 roles; Superpowers and third-party agents keep Claude Code's default rows. Official Codex plugin work is not a Claude custom subagent, so Claudex5 instead prefixes its visible task description with `[Codex Sol · high]`, `[Codex Luna · max]`, or `[Codex-Spark]` when that interface provides a description.
 
 Good prompts still improve routing because they provide an outcome and constraints:
 
@@ -311,7 +323,7 @@ git pull --ff-only
 ./verify.sh --strict
 ```
 
-Agent definitions update immediately through their links; rerunning the installer refreshes managed instruction and configuration blocks.
+Agent definitions and the model-row renderer update immediately through their links; rerunning the installer refreshes managed instruction and configuration blocks.
 It also rechecks Spark access on that machine, enabling or removing only the harness-owned optional role as needed.
 
 ## Uninstall
@@ -322,6 +334,7 @@ cd /path/to/claudex5-engineering-harness
 ```
 
 This removes only Claudex5-managed links, instruction blocks, and Codex agent tables. It leaves Claude Code, Codex, the official plugin, authentication, user hooks, and unrelated configuration installed. The uninstaller creates a backup first.
+The `subagentStatusLine` entry is removed only when it still points to the Claudex5 renderer; a foreign replacement is preserved.
 
 ## Security
 
@@ -398,6 +411,17 @@ claude plugin disable fable-advisor@fable-advisor
 ```
 
 If `claude plugin list` reports project or local scope instead of user scope, pass that exact scope explicitly, for example `--scope project`. Claudex5 never disables the plugin automatically. To opt into it for a particular task, explicitly name `fable-advisor` in that task; the adapter permits exact user-requested overrides.
+
+### Claudex5 subagents do not show model labels
+
+Run strict verification and inspect Claude's agent panel:
+
+```bash
+./install.sh
+./verify.sh --strict
+```
+
+Then restart Claude Code and open `/agents`. If verification reports a foreign `subagentStatusLine`, Claudex5 has preserved an existing custom renderer instead of overwriting it. Decide which renderer you want, remove or merge that setting manually, and rerun the installer. The independent top-level `statusLine` setting does not conflict and remains unchanged.
 
 ### Authentication is missing on a computer or server
 
