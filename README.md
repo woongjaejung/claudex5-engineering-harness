@@ -254,7 +254,7 @@ The web server accepts only loopback hosts and defaults to `127.0.0.1:8765`. On 
 ssh -L 8765:127.0.0.1:8765 user@example-server
 ```
 
-Then open `http://127.0.0.1:8765/` locally. No external assets or analytics are loaded. The recorder keeps only allowlisted, sanitized lifecycle metadata: logical identifiers, state, dependencies, known role/model/effort, task subject, and a description limited to 160 characters. It never records a prompt, response content, `outputFile`, usage telemetry, transcript paths, code, commands, tool output, environment variables, credentials, or model catalogs. Sanitized lifecycle state is stored with private permissions under `${XDG_STATE_HOME:-~/.local/state}/claudex5-engineering-harness/runs` and remains on that machine.
+Then open `http://127.0.0.1:8765/` locally. No external assets or analytics are loaded. The recorder keeps only allowlisted, sanitized lifecycle metadata: logical identifiers, state, dependencies, known role/model/effort, task subjects, and descriptions limited to 160 characters. Its field-level allowlist does not collect raw or dedicated prompt, response content, `outputFile`, usage telemetry, transcript paths, code, command, tool-output, environment, authentication, or model-catalog fields. Subjects and descriptions are still free text supplied by a user or tool: do not put secrets, sensitive code, or commands in them. Known secret shapes receive best-effort redaction, not a complete data-loss-prevention guarantee. Sanitized lifecycle state is stored with private permissions under `${XDG_STATE_HOME:-~/.local/state}/claudex5-engineering-harness/runs` and remains on that machine.
 
 Inspect or remove runtime history:
 
