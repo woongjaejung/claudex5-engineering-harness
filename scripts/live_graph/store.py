@@ -327,7 +327,7 @@ class StateStore:
             fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
             lock_stream.close()
 
-    def latest(self, cwd: Path | str | None = None) -> dict[str, object] | None:
+    def _snapshots_unordered(self, cwd: Path | str | None = None) -> list[dict[str, object]]:
         self._ensure_root()
         wanted_cwd = _canonical_cwd(cwd) if cwd is not None else None
         snapshots: list[dict[str, object]] = []
@@ -345,11 +345,19 @@ class StateStore:
             if wanted_cwd is not None and _canonical_cwd(snapshot.get("cwd")) != wanted_cwd:
                 continue
             snapshots.append(snapshot)
-        if not snapshots:
-            return None
-        active = [snapshot for snapshot in snapshots if snapshot.get("status") == "running"]
-        candidates = active or snapshots
-        return max(candidates, key=lambda snapshot: (str(snapshot.get("updated_at", "")), str(snapshot.get("session_id", ""))))
+        return snapshots
+
+    def snapshots(self, cwd: Path | str | None = None) -> list[dict[str, object]]:
+        """Return current session snapshots in stable running-first order."""
+        snapshots = self._snapshots_unordered(cwd)
+        snapshots.sort(key=lambda snapshot: str(snapshot.get("session_id", "")), reverse=True)
+        snapshots.sort(key=lambda snapshot: str(snapshot.get("updated_at", "")), reverse=True)
+        snapshots.sort(key=lambda snapshot: snapshot.get("status") != "running")
+        return snapshots
+
+    def latest(self, cwd: Path | str | None = None) -> dict[str, object] | None:
+        snapshots = self.snapshots(cwd)
+        return snapshots[0] if snapshots else None
 
     def _remove_run(self, candidate: Path) -> str:
         self._reject_symlink(candidate)

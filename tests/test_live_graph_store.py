@@ -118,6 +118,54 @@ class StateStoreTests(unittest.TestCase):
         self.assertEqual(self.store.latest(self.project)["session_id"], "newer")
         self.assertIsNone(self.store.latest(Path(self.temporary.name) / "missing"))
 
+    def test_snapshots_are_deterministic_and_path_filtered(self) -> None:
+        other = Path(self.temporary.name) / "other"
+        other.mkdir()
+        self.start("terminal-old", self.project)
+        self.store.append("terminal-old", "session.ended", "session:terminal-old", {"state": "passed"})
+        self.start("running-old", self.project)
+        self.start("terminal-new", other)
+        self.store.append("terminal-new", "session.ended", "session:terminal-new", {"state": "passed"})
+        self.start("running-new", self.project / ".")
+
+        timestamps = {
+            "terminal-old": "2026-08-10T00:00:00Z",
+            "running-old": "2026-08-11T00:00:00Z",
+            "terminal-new": "2026-08-13T00:00:00Z",
+            "running-new": "2026-08-12T00:00:00Z",
+        }
+        for session_id, timestamp in timestamps.items():
+            snapshot_path = self.root / session_id / "snapshot.json"
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            snapshot["updated_at"] = timestamp
+            snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+        (self.root / "not a session").mkdir()
+
+        self.assertEqual(
+            [snapshot["session_id"] for snapshot in self.store.snapshots()],
+            ["running-new", "running-old", "terminal-new", "terminal-old"],
+        )
+        self.assertEqual(
+            [snapshot["session_id"] for snapshot in self.store.snapshots(self.project / ".." / "project")],
+            ["running-new", "running-old", "terminal-old"],
+        )
+        self.assertEqual(self.store.latest()["session_id"], "running-new")
+
+    def test_snapshots_preserve_latest_tie_breaker_by_session_id(self) -> None:
+        self.start("running-a")
+        self.start("running-z")
+        for session_id in ("running-a", "running-z"):
+            snapshot_path = self.root / session_id / "snapshot.json"
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            snapshot["updated_at"] = "2026-08-14T00:00:00Z"
+            snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+        self.assertEqual(
+            [snapshot["session_id"] for snapshot in self.store.snapshots()],
+            ["running-z", "running-a"],
+        )
+        self.assertEqual(self.store.latest()["session_id"], "running-z")
+
     def test_cleanup_removes_only_runs_older_than_boundary(self) -> None:
         self.start("old")
         self.start("fresh")
