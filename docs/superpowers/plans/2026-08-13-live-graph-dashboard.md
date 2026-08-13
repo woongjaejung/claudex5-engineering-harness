@@ -19,6 +19,14 @@
 - Keep hook failures non-blocking and never echo malformed or sensitive input.
 - Use a failing behavioral test before every production-code increment.
 
+Before running Python commands in any task, resolve the supported interpreter through the repository's existing portable discovery helper:
+
+```bash
+PYTHON_BIN="$(bash -c 'source scripts/common.sh; claudex5_find_python')"
+```
+
+All following `"$PYTHON_BIN"` commands use that value; do not hardcode a macOS, Homebrew, Conda, or Linux-specific Python path.
+
 ---
 
 ### Task 1: Event model, reduction, and private state store
@@ -40,14 +48,14 @@
 
 - [ ] **Step 1: Write failing model tests**
 
-Create literal-fixture tests proving that secret-shaped labels become `[REDACTED]`, controls collapse to one line, terminal states cannot restart, duplicate events are idempotent, dependencies become stable edges, and a finish without a start creates a degraded terminal node.
+Create literal-fixture tests proving that secret-shaped labels become `[REDACTED]`, controls collapse to one line, terminal states cannot restart, duplicate events are idempotent, dependencies become stable edges, invalid node identifiers are rejected, and a finish without a start creates a degraded terminal node.
 
 - [ ] **Step 2: Run the model tests and observe the missing-module failure**
 
 Run:
 
 ```bash
-/opt/homebrew/bin/python3.11 -m unittest tests.test_live_graph_model -v
+"$PYTHON_BIN" -m unittest tests.test_live_graph_model -v
 ```
 
 Expected: import failure for `scripts.live_graph.model`.
@@ -62,14 +70,14 @@ Run the same command and require zero failures.
 
 - [ ] **Step 5: Write failing store tests**
 
-Use temporary directories and real files to prove mode `0700`/`0600`, monotonically increasing sequence values, event-log and snapshot recovery, bounded cleanup, latest-active selection by canonical `cwd`, malformed final-line tolerance, earlier corruption degradation, and symlink rejection.
+Use temporary directories and real files to prove mode `0700`/`0600`, monotonically increasing sequence values, event-log and snapshot recovery, bounded cleanup, latest-active selection by canonical `cwd`, malformed final-line tolerance, earlier corruption degradation, and symlink rejection. Treat hook-supplied session and node identifiers as untrusted: explicitly reject `..`, absolute paths, `/`, `\\`, encoded separators, controls, empty identifiers, and overlong identifiers before any path construction.
 
 - [ ] **Step 6: Run store tests and observe the missing implementation failure**
 
 Run:
 
 ```bash
-/opt/homebrew/bin/python3.11 -m unittest tests.test_live_graph_store -v
+"$PYTHON_BIN" -m unittest tests.test_live_graph_store -v
 ```
 
 - [ ] **Step 7: Implement the minimal locked atomic store**
@@ -79,8 +87,8 @@ Use `fcntl.flock` with non-blocking polling and a monotonic deadline, reject sym
 - [ ] **Step 8: Run Task 1 tests and the existing Python suite**
 
 ```bash
-/opt/homebrew/bin/python3.11 -m unittest tests.test_live_graph_model tests.test_live_graph_store -v
-/opt/homebrew/bin/python3.11 -m unittest discover -s tests -v
+"$PYTHON_BIN" -m unittest tests.test_live_graph_model tests.test_live_graph_store -v
+"$PYTHON_BIN" -m unittest discover -s tests -v
 ```
 
 - [ ] **Step 9: Commit Task 1**
@@ -112,7 +120,7 @@ Exercise real hook-shaped payloads for `SessionStart`, `PreToolUse:TaskCreate`, 
 - [ ] **Step 2: Run recorder tests and confirm RED**
 
 ```bash
-/opt/homebrew/bin/python3.11 -m unittest tests.test_live_graph_record -v
+"$PYTHON_BIN" -m unittest tests.test_live_graph_record -v
 ```
 
 - [ ] **Step 3: Implement lifecycle normalization**
@@ -126,7 +134,7 @@ Resolve the real repository from `Path(__file__).resolve()`, add it to `sys.path
 - [ ] **Step 5: Run recorder tests and a no-echo malformed-input smoke test**
 
 ```bash
-/opt/homebrew/bin/python3.11 -m unittest tests.test_live_graph_record -v
+"$PYTHON_BIN" -m unittest tests.test_live_graph_record -v
 printf '%s' '{"private":"bearer abcdefghijklmnopqrstuvwxyz"' | claude/hooks/claudex5-live-graph.py 2>&1 | grep -v 'abcdefghijklmnopqrstuvwxyz'
 ```
 
@@ -165,7 +173,7 @@ Use a hand-built snapshot to assert literal wide graph output with branch connec
 - [ ] **Step 2: Run terminal tests and confirm RED**
 
 ```bash
-/opt/homebrew/bin/python3.11 -m unittest tests.test_live_graph_terminal -v
+"$PYTHON_BIN" -m unittest tests.test_live_graph_terminal -v
 ```
 
 - [ ] **Step 3: Implement the terminal renderer**
@@ -179,27 +187,27 @@ Start the real standard-library HTTP server on an ephemeral loopback port. Asser
 - [ ] **Step 5: Run web tests and confirm RED, then implement local SVG rendering**
 
 ```bash
-/opt/homebrew/bin/python3.11 -m unittest tests.test_live_graph_web -v
+"$PYTHON_BIN" -m unittest tests.test_live_graph_web -v
 ```
 
 Serve constant assets from memory. Use vanilla JavaScript to poll once per second, topologically rank nodes, draw SVG edges before nodes, color by state, retain the last graph on polling failure, and show a disconnected badge.
 
 - [ ] **Step 6: Write failing CLI behavior tests**
 
-Run the real entry point in an isolated temporary `HOME`. Assert latest-run selection, `--once`, JSON `status`, explicit start/finish events, `clean`, prompt-through-stdin Codex command construction, exact fixed role model/effort, original child exit status, and gate child exit status. Replace only the external `codex` executable with a complete fake process; keep store and subprocess behavior real.
+Run the real entry point in an isolated temporary `HOME`. Assert latest-run selection, `--once`, JSON `status`, explicit start/finish events, `clean`, both `--prompt-file` and standard-input prompt handling, prompt-through-stdin Codex command construction, exact fixed role model/effort, original child exit status, and gate child exit status. Replace only the external `codex` executable with a complete fake process; keep store and subprocess behavior real. Add subprocess tests that send `SIGINT` and `SIGTERM`, prove the signal reaches the child process group, record `interrupted`, and return the conventional signal-derived status without leaving an orphan process.
 
 - [ ] **Step 7: Run CLI tests and confirm RED, then implement the command**
 
 ```bash
-/opt/homebrew/bin/python3.11 -m unittest tests.test_live_graph_cli -v
+"$PYTHON_BIN" -m unittest tests.test_live_graph_cli -v
 ```
 
-`codex-run` must invoke `codex exec --ephemeral --model <fixed-role-model> -c model_reasoning_effort="<fixed-role-effort>" --sandbox <validated-mode> -` and feed the prompt through standard input. `gate-run` must use `--` to delimit the exact child command and must not use a shell.
+`codex-run` must accept exactly one of `--prompt-file PATH` or a prompt on standard input, invoke `codex exec --ephemeral --model <fixed-role-model> -c model_reasoning_effort="<fixed-role-effort>" --sandbox <validated-mode> -`, and feed the prompt through standard input without persisting it. Both wrappers must start an isolated child process group, forward termination signals, finalize the graph node in `finally`, and preserve the child's success, failure, or interruption status. `gate-run` must use `--` to delimit the exact child command and must not use a shell.
 
 - [ ] **Step 8: Run all Task 3 tests and commit**
 
 ```bash
-/opt/homebrew/bin/python3.11 -m unittest tests.test_live_graph_terminal tests.test_live_graph_web tests.test_live_graph_cli -v
+"$PYTHON_BIN" -m unittest tests.test_live_graph_terminal tests.test_live_graph_web tests.test_live_graph_cli -v
 git add bin scripts/live_graph scripts/live_graph_cli.py tests/test_live_graph_terminal.py tests/test_live_graph_web.py tests/test_live_graph_cli.py
 git commit -m "feat: add live terminal and web graph dashboard"
 ```
@@ -228,27 +236,27 @@ git commit -m "feat: add live terminal and web graph dashboard"
 
 - [ ] **Step 1: Write failing merge and installation tests**
 
-Assert behavior rather than source text: merge a settings fixture containing foreign old-style and current-style hooks plus both status-line keys; verify exact foreign structures remain, each Claudex5 hook appears once after two installs, the new links target this repository, modes are executable, rollback removes links and hook entries, and uninstall preserves foreign hooks and runtime history.
+Assert behavior rather than source text: merge a settings fixture containing foreign old-style and current-style hooks plus both status-line keys; verify exact foreign structures remain, each Claudex5 hook appears once after two installs, the new links target this repository, modes are executable, rollback removes links and hook entries, and uninstall preserves foreign hooks and runtime history. A preserved foreign `subagentStatusLine` must be a non-failing informational state even in strict verification. Inject an unmerge failure during uninstall and prove configuration and every previously installed link remain intact.
 
 - [ ] **Step 2: Run focused integration tests and confirm RED**
 
 ```bash
-/opt/homebrew/bin/python3.11 -m unittest tests.test_merge_config -v
-CLAUDEX5_TEST_PYTHON=/opt/homebrew/bin/python3.11 bash tests/test_install.sh
+"$PYTHON_BIN" -m unittest tests.test_merge_config -v
+CLAUDEX5_TEST_PYTHON="$PYTHON_BIN" bash tests/test_install.sh
 ```
 
 - [ ] **Step 3: Implement exact hook merge/unmerge and links**
 
-Define immutable owned hook objects for `SessionStart`, `PreToolUse`, `PostToolUse`, `SubagentStart`, `SubagentStop`, `Stop`, and `SessionEnd`. Append without normalizing foreign objects. Remove by exact equality only. Extend the existing transaction journal, structural verifier, collision protection, and symlink checks.
+Define immutable owned hook objects for `SessionStart`, `PreToolUse`, `PostToolUse`, `SubagentStart`, `SubagentStop`, `Stop`, and `SessionEnd`. Append without normalizing foreign objects. Remove by exact equality only. Extend the existing transaction journal, structural verifier, collision protection, and symlink checks. Make uninstall failure-atomic by completing configuration unmerge before removing links and by journaling/restoring link removals if a later step fails.
 
 - [ ] **Step 4: Update routing and quality-gate execution**
 
-Require `claudex5 codex-run` for automatic harness Codex roles when available and preserve manual `/codex:*` commands as an observable best-effort path. Wrap each discovered quality command with `claudex5 gate-run --name <name> --` when the command exists; fall back to direct execution with an explicit warning only when the installed command is unavailable.
+Require `claudex5 codex-run` for automatic harness Codex roles when available and preserve manual `/codex:*` commands as an observable best-effort path. The project quality script must create one parent `quality_gate` node at entry, pass its stable group identifier and ordered dependency to every `claudex5 gate-run --group-id <id> --name <name> -- ...` child, and finalize the parent in an `EXIT`, `INT`, and `TERM` trap as passed, failed, or interrupted. Each child receives a `gates` edge from the parent and a `depends_on` edge from the previous executed command. Fall back to direct execution with an explicit warning only when the installed command is unavailable, and never mark an unobserved command as passed.
 
 - [ ] **Step 5: Validate the modified routing skill**
 
 ```bash
-"$HOME/miniforge3/bin/python3" "$HOME/.codex/skills/.system/skill-creator/scripts/quick_validate.py" claude/skills/claudex5-subagent-routing
+"$PYTHON_BIN" -m unittest tests.test_merge_config -v
 wc -w claude/skills/claudex5-subagent-routing/SKILL.md
 ```
 
@@ -257,8 +265,8 @@ Require valid frontmatter and fewer than 500 words.
 - [ ] **Step 6: Run focused and full installation tests, then commit**
 
 ```bash
-/opt/homebrew/bin/python3.11 -m unittest tests.test_merge_config -v
-CLAUDEX5_TEST_PYTHON=/opt/homebrew/bin/python3.11 bash tests/test_install.sh
+"$PYTHON_BIN" -m unittest tests.test_merge_config -v
+CLAUDEX5_TEST_PYTHON="$PYTHON_BIN" bash tests/test_install.sh
 ./verify.sh --secrets-only
 git add scripts/merge_config.py link.sh install.sh uninstall.sh verify.sh tests/test_merge_config.py tests/test_install.sh claude/managed-CLAUDE.md claude/skills/claudex5-subagent-routing/SKILL.md project-template/scripts/quality-gate.sh
 git commit -m "feat: install live graph lifecycle tracking"
@@ -301,9 +309,9 @@ Keep `README.md` entirely English. Add the graph architecture, commands, status 
 
 ```bash
 for script in install.sh link.sh uninstall.sh verify.sh bootstrap-system.sh scripts/*.sh tests/*.sh project-template/scripts/*.sh bin/claudex5; do bash -n "$script"; done
-/opt/homebrew/bin/python3.11 -m unittest discover -s tests -v
+"$PYTHON_BIN" -m unittest discover -s tests -v
 bash tests/test_common.sh
-CLAUDEX5_TEST_PYTHON=/opt/homebrew/bin/python3.11 bash tests/test_install.sh
+CLAUDEX5_TEST_PYTHON="$PYTHON_BIN" bash tests/test_install.sh
 bash tests/test_bootstrap.sh
 bash tests/test_verify.sh
 ./verify.sh --secrets-only
