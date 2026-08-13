@@ -12,6 +12,55 @@ from scripts.live_graph.store import StateStore
 
 
 class HookNormalizationTests(unittest.TestCase):
+    def test_official_task_hooks_preserve_safe_metadata_without_completing(self) -> None:
+        created = normalize_hook(
+            {
+                "hook_event_name": "TaskCreated",
+                "session_id": "session-1",
+                "task_id": "task-001",
+                "task_subject": "Implement user authentication",
+                "task_description": "Add login and signup endpoints",
+                "teammate_name": "implementer",
+                "transcript_path": "/private/transcript.jsonl",
+            }
+        )[0]
+        completed = normalize_hook(
+            {
+                "hook_event_name": "TaskCompleted",
+                "session_id": "session-1",
+                "task_id": "task-001",
+                "task_subject": "Implement user authentication",
+                "task_description": "Add login and signup endpoints",
+                "team_name": "deprecated-team",
+                "transcript_path": "/private/transcript.jsonl",
+            }
+        )[0]
+
+        for event in (created, completed):
+            self.assertEqual(event["event_type"], "task.created")
+            self.assertEqual(event["node_id"], "task:task-001")
+            self.assertEqual(event["payload"]["label"], "Implement user authentication")
+            self.assertEqual(event["payload"]["description"], "Add login and signup endpoints")
+            self.assertNotIn("state", event["payload"])
+            encoded = json.dumps(event)
+            self.assertNotIn("teammate_name", encoded)
+            self.assertNotIn("team_name", encoded)
+            self.assertNotIn("transcript", encoded)
+
+    def test_session_start_includes_non_empty_session_title_only(self) -> None:
+        event = normalize_hook(
+            {
+                "hook_event_name": "SessionStart",
+                "session_id": "session-1",
+                "cwd": "/tmp/project",
+                "session_title": "  Build\nDashboard ",
+                "transcript_path": "/private/transcript.jsonl",
+            }
+        )[0]
+
+        self.assertEqual(event["payload"]["title"], "Build Dashboard")
+        self.assertNotIn("transcript", json.dumps(event))
+
     def test_normalizes_supported_lifecycle_without_private_fields(self) -> None:
         fixtures = (
             (
@@ -28,7 +77,7 @@ class HookNormalizationTests(unittest.TestCase):
                     "tool_input": {"subject": "Implement parser", "blockedBy": ["7"]},
                 },
                 "task.created",
-                "task:toolu-1",
+                "task:compat-toolu-1",
             ),
             (
                 {
@@ -100,6 +149,104 @@ class HookNormalizationTests(unittest.TestCase):
         self.assertEqual(task["payload"]["label"], "Build parser")
         self.assertEqual(task["payload"]["dependencies"], ["task:7", "task:8"])
         self.assertNotIn("description", task["payload"])
+
+    def test_pre_task_create_prefers_explicit_stable_identifier(self) -> None:
+        event = normalize_hook(
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": "session-1",
+                "tool_name": "TaskCreate",
+                "tool_use_id": "tool-use-1",
+                "tool_input": {"taskId": "stable-001", "id": "stable-002", "subject": "Stable task"},
+            }
+        )[0]
+
+        self.assertEqual(event["node_id"], "task:stable-001")
+        self.assertNotIn("tool-use-1", json.dumps(event))
+
+    def test_post_task_create_explicitly_supersedes_compatibility_node(self) -> None:
+        event = normalize_hook(
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "session-1",
+                "tool_name": "TaskCreate",
+                "tool_use_id": "tool-use-1",
+                "tool_input": {
+                    "subject": "Create safe task",
+                    "description": "Input description",
+                    "prompt": "prompt-secret-value",
+                },
+                "tool_response": {
+                    "task": {
+                        "taskId": "stable-001",
+                        "description": "Response description",
+                        "telemetry": {"secret": "telemetry-secret-value"},
+                    },
+                    "output": "tool-output-secret-value",
+                },
+            }
+        )[0]
+
+        self.assertEqual(event["event_type"], "task.created")
+        self.assertEqual(event["node_id"], "task:stable-001")
+        self.assertEqual(
+            event["payload"],
+            {
+                "kind": "task",
+                "label": "Create safe task",
+                "description": "Input description",
+                "supersedes": "task:compat-tool-use-1",
+            },
+        )
+        encoded = json.dumps(event)
+        self.assertNotIn("prompt-secret-value", encoded)
+        self.assertNotIn("telemetry-secret-value", encoded)
+        self.assertNotIn("tool-output-secret-value", encoded)
+
+    def test_agent_description_requires_explicit_structured_agent_id(self) -> None:
+        event = normalize_hook(
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "session-1",
+                "tool_name": "Agent",
+                "tool_input": {
+                    "description": "A" * 200,
+                    "prompt": "prompt-secret-value",
+                },
+                "tool_response": {
+                    "agentId": "agent-001",
+                    "outputFile": "/private/output-secret.json",
+                    "telemetry": {"secret": "telemetry-secret-value"},
+                },
+            }
+        )
+
+        self.assertEqual(
+            event,
+            [
+                {
+                    "event_type": "node.updated",
+                    "node_id": "agent:agent-001",
+                    "payload": {"description": "A" * 160},
+                    "source": "claude-hook",
+                }
+            ],
+        )
+        self.assertNotIn("prompt-secret-value", json.dumps(event))
+        self.assertNotIn("output-secret.json", json.dumps(event))
+        self.assertNotIn("telemetry-secret-value", json.dumps(event))
+        self.assertEqual(
+            normalize_hook(
+                {
+                    "hook_event_name": "PostToolUse",
+                    "session_id": "session-1",
+                    "tool_name": "Agent",
+                    "tool_input": {"description": "Known description"},
+                    "tool_response": {"title": "Subagent but not an identifier"},
+                }
+            ),
+            [],
+        )
 
         agent = normalize_hook(
             {
@@ -247,6 +394,131 @@ class HookPersistenceTests(unittest.TestCase):
             with self.subTest(secret=secret):
                 self.assertNotIn(secret.encode(), persisted)
         self.assertIn(b"[REDACTED]", persisted)
+
+    def test_persists_stable_tasks_agent_description_and_no_private_hook_values(self) -> None:
+        private_values = (
+            "prompt-secret-value",
+            "command-secret-value",
+            "tool-output-secret-value",
+            "assistant-message-secret-value",
+            "/private/output-secret.json",
+            "/private/transcript-secret.jsonl",
+        )
+        self.record(
+            hook_event_name="SessionStart",
+            session_id="session-1",
+            cwd=str(self.project),
+            session_title="Dashboard session",
+            transcript_path=private_values[5],
+        )
+        self.record(
+            hook_event_name="PreToolUse",
+            session_id="session-1",
+            tool_name="TaskCreate",
+            tool_use_id="tool-use-1",
+            tool_input={
+                "subject": "Legacy stable task",
+                "command": private_values[1],
+                "description": private_values[0],
+            },
+            transcript_path=private_values[5],
+        )
+        self.record(
+            hook_event_name="PostToolUse",
+            session_id="session-1",
+            tool_name="TaskCreate",
+            tool_use_id="tool-use-1",
+            tool_input={
+                "subject": "Legacy stable task",
+                "description": "Safe stable description",
+                "prompt": private_values[0],
+            },
+            tool_response={
+                "task": {"id": "stable-task-1"},
+                "output": private_values[2],
+            },
+            last_assistant_message=private_values[3],
+            transcript_path=private_values[5],
+        )
+        snapshot = self.store.load("session-1")
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        visible_task_ids = [
+            node_id
+            for node_id, node in snapshot["nodes"].items()
+            if node["kind"] == "task" and not node.get("superseded_by")
+        ]
+        self.assertEqual(visible_task_ids, ["task:stable-task-1"])
+        self.assertEqual(
+            snapshot["nodes"]["task:compat-tool-use-1"]["superseded_by"], "task:stable-task-1"
+        )
+        self.assertEqual(snapshot["nodes"]["task:stable-task-1"]["description"], "Safe stable description")
+
+        self.record(
+            hook_event_name="TaskCreated",
+            session_id="session-1",
+            task_id="task-001",
+            task_subject="Official task",
+            task_description="Safe official description",
+            transcript_path=private_values[5],
+        )
+        self.record(
+            hook_event_name="SubagentStart",
+            session_id="session-1",
+            agent_id="agent-001",
+            agent_type="harness-implementer",
+        )
+        self.record(
+            hook_event_name="PostToolUse",
+            session_id="session-1",
+            tool_name="Agent",
+            tool_input={"description": "Safe agent description", "prompt": private_values[0]},
+            tool_response={"agentId": "agent-001", "outputFile": private_values[4]},
+            transcript_path=private_values[5],
+        )
+        self.record(
+            hook_event_name="TaskCompleted",
+            session_id="session-1",
+            task_id="task-001",
+            task_subject="Official task",
+            task_description="Safe official description",
+            transcript_path=private_values[5],
+        )
+        snapshot = self.store.load("session-1")
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot["nodes"]["task:task-001"]["state"], "waiting")
+        self.assertNotIn("finished_at", snapshot["nodes"]["task:task-001"])
+        self.assertEqual(snapshot["nodes"]["agent:agent-001"]["description"], "Safe agent description")
+
+        self.record(
+            hook_event_name="PostToolUse",
+            session_id="session-1",
+            tool_name="TaskUpdate",
+            tool_input={"taskId": "task-001", "status": "completed"},
+            tool_response={"task": {"id": "task-001", "status": "completed"}},
+            transcript_path=private_values[5],
+        )
+        self.record(
+            hook_event_name="SubagentStop",
+            session_id="session-1",
+            agent_id="agent-001",
+            agent_type="harness-implementer",
+        )
+        self.record(hook_event_name="SessionEnd", session_id="session-1", transcript_path=private_values[5])
+
+        snapshot = self.store.load("session-1")
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot["title"], "Dashboard session")
+        task = snapshot["nodes"]["task:task-001"]
+        self.assertEqual(task["state"], "passed")
+        self.assertIn("finished_at", task)
+
+        persisted = b"\n".join(path.read_bytes() for path in self.store.root.rglob("*") if path.is_file())
+        for private_value in private_values:
+            with self.subTest(private_value=private_value):
+                self.assertNotIn(private_value.encode(), persisted)
 
     def test_store_timeout_is_non_blocking(self) -> None:
         class UnavailableStore:
