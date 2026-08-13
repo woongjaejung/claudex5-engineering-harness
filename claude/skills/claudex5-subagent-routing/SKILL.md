@@ -11,6 +11,10 @@ Keep Superpowers responsible for process mechanics: plan reading, worktree choic
 
 The main Claude session retains requirements, architecture, task boundaries, integration, verification, and the final report. It must inspect every delegated result.
 
+## Review Plans Before Implementation
+
+Fable remains the plan owner. Run fresh, read-only `harness_sol_plan_review` with `gpt-5.6-sol` high when a plan crosses multiple modules or services; covers authentication, authorization, security, data migration, or destructive state; has difficult rollback, material architecture change, or high operational risk; is ambiguous or has multiple viable approaches; or contains five or more executable tasks. Skip simple plans. Use `[Codex Sol · high] Plan review` as the visible title and require `APPROVE` or `NEEDS CHANGES`. On changes, Fable revises and requests one fresh recheck. If it still blocks, stop before implementation and ask the user.
+
 ## Route Each Workflow Role
 
 1. Use `harness-researcher` for read-only codebase exploration.

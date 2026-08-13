@@ -465,6 +465,45 @@ class TemplateTests(unittest.TestCase):
         self.assertIn("subagent-driven-development", managed)
         self.assertIn("executing-plans", managed)
 
+    def test_complex_plans_require_bounded_sol_review_before_implementation(self):
+        paths = (
+            self.repository / "claude/managed-CLAUDE.md",
+            self.repository / "claude/agents/harness-orchestrator.md",
+            self.repository / "claude/skills/claudex5-subagent-routing/SKILL.md",
+            self.repository / "codex/managed-AGENTS.md",
+        )
+        combined = "\n".join(path.read_text(encoding="utf-8") for path in paths)
+        for required in (
+            "harness_sol_plan_review",
+            "[Codex Sol · high] Plan review",
+            "multiple modules or services",
+            "authentication",
+            "authorization",
+            "security",
+            "data migration",
+            "destructive state",
+            "rollback",
+            "architecture",
+            "operational risk",
+            "ambiguous",
+            "multiple viable approaches",
+            "five or more executable tasks",
+            "simple plans",
+            "fresh",
+            "read-only",
+            "gpt-5.6-sol",
+            "APPROVE",
+            "NEEDS CHANGES",
+            "Fable remains the plan owner",
+            "one fresh recheck",
+            "stop before implementation",
+            "ask the user",
+        ):
+            self.assertIn(required, combined)
+
+        skill = paths[2].read_text(encoding="utf-8")
+        self.assertLess(len(re.findall(r"\b[\w.-]+\b", skill)), 500)
+
     def test_quality_gate_runs_available_package_scripts(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
