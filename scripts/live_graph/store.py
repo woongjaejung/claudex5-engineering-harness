@@ -17,6 +17,27 @@ from uuid import uuid4
 from .model import SCHEMA_VERSION, new_snapshot, reduce_event, sanitize_label, validate_identifier
 
 
+_TEXT_FIELDS = frozenset({"label", "title", "session_title", "description"})
+_NODE_METADATA_FIELDS = frozenset(
+    {"label", "title", "description", "superseded_by", "role", "model", "effort"}
+)
+_NODE_STRUCTURE_FIELDS = frozenset(
+    {"kind", "state", "parent_id", "parent_edge_kind", "dependencies"}
+)
+_PAYLOAD_FIELDS: dict[str, frozenset[str]] = {
+    "session.started": frozenset({"cwd", "title", "session_title"}),
+    "session.ended": frozenset({"state"}),
+    "node.created": _NODE_METADATA_FIELDS | _NODE_STRUCTURE_FIELDS,
+    "task.created": _NODE_METADATA_FIELDS | _NODE_STRUCTURE_FIELDS | frozenset({"supersedes"}),
+    "node.started": _NODE_METADATA_FIELDS | _NODE_STRUCTURE_FIELDS,
+    "node.finished": _NODE_METADATA_FIELDS | _NODE_STRUCTURE_FIELDS,
+    "task.updated": _NODE_METADATA_FIELDS | _NODE_STRUCTURE_FIELDS | frozenset({"supersedes"}),
+    "node.updated": _NODE_METADATA_FIELDS,
+    "edge.created": frozenset({"target", "kind"}),
+    "checkpoint": frozenset({"label"}),
+}
+
+
 def _utc_now() -> str:
     from datetime import datetime, timezone
 
@@ -27,6 +48,35 @@ def _canonical_cwd(value: object) -> str:
     if not isinstance(value, (str, os.PathLike)) or not str(value):
         return ""
     return str(Path(value).expanduser().resolve(strict=False))
+
+
+def _safe_payload(event_type: str, payload: dict[str, object]) -> dict[str, object]:
+    """Copy only reducer-supported, scalar lifecycle fields into private state."""
+    for key in _TEXT_FIELDS:
+        if key in payload and not isinstance(payload[key], str):
+            raise ValueError("invalid event text field")
+    for key in ("role", "model", "effort"):
+        if key in payload and not isinstance(payload[key], str):
+            raise ValueError("invalid event metadata field")
+
+    allowed = _PAYLOAD_FIELDS.get(event_type, frozenset())
+    safe_payload = {key: payload[key] for key in allowed if key in payload}
+    for key in ("kind", "state", "parent_id", "parent_edge_kind", "target", "superseded_by", "supersedes"):
+        if key in safe_payload and not isinstance(safe_payload[key], str):
+            raise ValueError("invalid event structural field")
+    if "dependencies" in safe_payload:
+        dependencies = safe_payload["dependencies"]
+        if not isinstance(dependencies, list) or not all(isinstance(item, str) for item in dependencies):
+            raise ValueError("invalid event structural field")
+
+    for key in ("label", "title", "session_title", "role", "model", "effort"):
+        if key in safe_payload:
+            safe_payload[key] = sanitize_label(safe_payload[key])
+    if "description" in safe_payload:
+        safe_payload["description"] = sanitize_label(safe_payload["description"], limit=160)
+    if event_type == "session.started":
+        safe_payload["cwd"] = _canonical_cwd(safe_payload.get("cwd"))
+    return safe_payload
 
 
 class StateStore:
@@ -212,17 +262,7 @@ class StateStore:
             payload = {}
         if not isinstance(payload, dict):
             raise ValueError("event payload must be an object")
-        for key in ("label", "title", "session_title", "description"):
-            if key in payload and not isinstance(payload[key], str):
-                raise ValueError("invalid event text field")
-        safe_payload = copy.deepcopy(payload)
-        for key in ("label", "title", "session_title", "role", "model", "effort"):
-            if key in safe_payload:
-                safe_payload[key] = sanitize_label(safe_payload[key])
-        if "description" in safe_payload:
-            safe_payload["description"] = sanitize_label(safe_payload["description"], limit=160)
-        if event_type == "session.started":
-            safe_payload["cwd"] = _canonical_cwd(safe_payload.get("cwd"))
+        safe_payload = _safe_payload(event_type, payload)
         run_dir = self._run_dir(session_id, create=True)
         lock_stream = self._lock(run_dir)
         try:

@@ -241,6 +241,73 @@ class StateStoreTests(unittest.TestCase):
         )
         self.assertNotIn("nested", private_state)
 
+    def test_drops_unknown_and_nested_fields_while_preserving_task_structure(self) -> None:
+        forbidden_values = (
+            "prompt-secret",
+            "code-secret",
+            "command-secret",
+            "tool-output-secret",
+            "response-secret",
+            "/private/transcript-secret.jsonl",
+            "/private/output-secret.txt",
+            "environment-secret",
+            "nested-secret",
+        )
+        event = self.store.append(
+            "session-1",
+            "task.created",
+            "task:build",
+            {
+                "kind": "task",
+                "label": "Build image",
+                "description": "Safe description",
+                "parent_id": "session:session-1",
+                "parent_edge_kind": "contains",
+                "dependencies": ["task:plan"],
+                "prompt": forbidden_values[0],
+                "code": forbidden_values[1],
+                "command": forbidden_values[2],
+                "tool_output": {"value": forbidden_values[3]},
+                "response": forbidden_values[4],
+                "transcript_path": forbidden_values[5],
+                "output_path": forbidden_values[6],
+                "environment": {"TOKEN": forbidden_values[7]},
+                "arbitrary": {"nested": forbidden_values[8]},
+            },
+        )
+
+        self.assertEqual(
+            event["payload"],
+            {
+                "kind": "task",
+                "label": "Build image",
+                "description": "Safe description",
+                "parent_id": "session:session-1",
+                "parent_edge_kind": "contains",
+                "dependencies": ["task:plan"],
+            },
+        )
+        snapshot = self.store.load("session-1")
+        self.assertEqual(snapshot["nodes"]["task:build"]["description"], "Safe description")
+        self.assertIn("task:build|depends_on|task:plan", snapshot["edges"])
+        persisted = b"\n".join(path.read_bytes() for path in self.root.rglob("*") if path.is_file())
+        for value in forbidden_values:
+            with self.subTest(value=value):
+                self.assertNotIn(value.encode(), persisted)
+
+    def test_non_string_node_metadata_is_rejected_before_persistence(self) -> None:
+        self.start()
+        events_path = self.root / "session-1" / "events.jsonl"
+        before = events_path.read_bytes()
+
+        for key in ("role", "model", "effort"):
+            for value in ({"private": "nested-secret"}, ["nested-secret"]):
+                with self.subTest(key=key, value=value):
+                    with self.assertRaisesRegex(ValueError, "^invalid event metadata field$"):
+                        self.store.append("session-1", "node.updated", "task:one", {key: value})
+
+        self.assertEqual(events_path.read_bytes(), before)
+
     def test_clear_all_removes_runs_but_keeps_private_root(self) -> None:
         self.start("one")
         self.start("two")
