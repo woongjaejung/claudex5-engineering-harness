@@ -48,6 +48,46 @@ claudex5_node_version_ok() {
   ' >/dev/null 2>&1
 }
 
+claudex5_version_at_least() {
+  local actual="$1"
+  local required="$2"
+  local actual_major actual_minor actual_patch required_major required_minor required_patch
+  local version_pattern='^([0-9]+)\.([0-9]+)\.([0-9]+)$'
+
+  [[ "$actual" =~ $version_pattern ]] || return 1
+  actual_major="${BASH_REMATCH[1]}"
+  actual_minor="${BASH_REMATCH[2]}"
+  actual_patch="${BASH_REMATCH[3]}"
+  [[ "$required" =~ $version_pattern ]] || return 1
+  required_major="${BASH_REMATCH[1]}"
+  required_minor="${BASH_REMATCH[2]}"
+  required_patch="${BASH_REMATCH[3]}"
+
+  if (( 10#$actual_major != 10#$required_major )); then
+    (( 10#$actual_major > 10#$required_major ))
+  elif (( 10#$actual_minor != 10#$required_minor )); then
+    (( 10#$actual_minor > 10#$required_minor ))
+  else
+    (( 10#$actual_patch >= 10#$required_patch ))
+  fi
+}
+
+claudex5_claude_version() {
+  local output version_pattern='^([0-9]+)\.([0-9]+)\.([0-9]+)( \(Claude Code\))?$'
+  output="$(claude --version 2>/dev/null)" || return 1
+  output="$(printf '%s' "$output" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  [[ "$output" =~ $version_pattern ]] || return 1
+  printf '%s.%s.%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+}
+
+claudex5_hook_groups() {
+  local enable_task_created="$1"
+  local enable_task_completed="$2"
+  printf '%s\n' SessionStart PreToolUse PostToolUse SubagentStart SubagentStop Stop SessionEnd
+  [[ "$enable_task_completed" == "1" ]] && printf '%s\n' TaskCompleted
+  [[ "$enable_task_created" == "1" ]] && printf '%s\n' TaskCreated
+}
+
 claudex5_plugin_enabled() {
   local plugin_list="$1"
   local plugin_name="$2"

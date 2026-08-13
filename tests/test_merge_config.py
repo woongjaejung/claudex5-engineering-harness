@@ -11,6 +11,7 @@ from pathlib import Path
 import scripts.merge_config as merge_config_module
 from scripts.plugin_registry import resolve_codex_helper
 from scripts.merge_config import (
+    BASE_CLAUDEX5_HOOK_GROUPS,
     CLAUDEX5_HOOK_GROUPS,
     END_MARKER,
     START_MARKER,
@@ -57,7 +58,7 @@ class ClaudeSettingsTests(unittest.TestCase):
 
             self.assertEqual(merged["model"], "existing-model")
             self.assertEqual(merged["hooks"]["Stop"][0], {"command": "keep-me"})
-            self.assertIn(CLAUDEX5_HOOK_GROUPS["Stop"], merged["hooks"]["Stop"])
+            self.assertIn(CLAUDEX5_HOOK_GROUPS["Stop"][0], merged["hooks"]["Stop"])
             self.assertEqual(
                 merged["statusLine"], {"type": "command", "command": "keep-status"}
             )
@@ -102,8 +103,9 @@ class ClaudeSettingsTests(unittest.TestCase):
 
             self.assertEqual(merged["hooks"]["SessionStart"][0], foreign_current)
             self.assertEqual(merged["hooks"]["Stop"][0], {"command": "legacy-hook"})
-            for event, owned in CLAUDEX5_HOOK_GROUPS.items():
-                self.assertEqual(merged["hooks"][event].count(owned), 1)
+            for event, owned_groups in BASE_CLAUDEX5_HOOK_GROUPS.items():
+                for owned in owned_groups:
+                    self.assertEqual(merged["hooks"][event].count(owned), 1)
             self.assertEqual(merged["statusLine"]["command"], "keep-status")
             self.assertEqual(merged["subagentStatusLine"]["command"], "keep-subagent")
 
@@ -191,6 +193,44 @@ class ClaudeSettingsTests(unittest.TestCase):
             for event in CLAUDEX5_HOOK_GROUPS:
                 if event != "Stop":
                     self.assertNotIn(event, result.get("hooks", {}))
+
+    def test_capability_gated_hooks_normalize_duplicates_and_remove_downgraded_groups(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            foreign = {"matcher": "Bash", "hooks": [{"command": "~/.orca/hook.sh"}]}
+            task_created = {"hooks": [{"type": "command", "command": "~/.claude/hooks/claudex5-live-graph.py", "timeout": 5}]}
+            path.write_text(
+                json.dumps(
+                    {
+                        "hooks": {
+                            "PostToolUse": [foreign],
+                            "TaskCreated": [task_created, task_created],
+                            "TaskCompleted": [task_created],
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            merge_claude_settings(
+                path, enable_plugin=False, enable_task_created=True, enable_task_completed=True
+            )
+            merge_claude_settings(
+                path, enable_plugin=False, enable_task_created=True, enable_task_completed=True
+            )
+            latest = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(latest["hooks"]["PostToolUse"][0], foreign)
+            for event, owned_groups in CLAUDEX5_HOOK_GROUPS.items():
+                for owned in owned_groups:
+                    self.assertEqual(latest["hooks"][event].count(owned), 1)
+            self.assertNotIn("matcher", latest["hooks"]["TaskCreated"][0])
+            self.assertNotIn("matcher", latest["hooks"]["TaskCompleted"][0])
+
+            merge_claude_settings(path, enable_plugin=False)
+            downgraded = json.loads(path.read_text(encoding="utf-8"))
+            self.assertNotIn("TaskCreated", downgraded["hooks"])
+            self.assertNotIn("TaskCompleted", downgraded["hooks"])
+            self.assertEqual(downgraded["hooks"]["PostToolUse"][0], foreign)
 
     def test_uninstall_rolls_back_every_owned_file_after_an_intermediate_write_failure(self):
         with tempfile.TemporaryDirectory() as directory:

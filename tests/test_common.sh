@@ -34,6 +34,45 @@ PATH="$fake_root/bin:/usr/bin:/bin" claudex5_node_version_ok
 write_fake_node "22.1.0"
 PATH="$fake_root/bin:/usr/bin:/bin" claudex5_node_version_ok
 
+# A numeric version gate must compare all three components, rather than using
+# lexical ordering or accepting a version substring from unrelated output.
+if claudex5_version_at_least "2.1.32" "2.1.33"; then
+  printf '%s\n' "2.1.32 must be below the TaskCompleted boundary" >&2
+  exit 1
+fi
+claudex5_version_at_least "2.1.33" "2.1.33"
+if claudex5_version_at_least "2.1.83" "2.1.84"; then
+  printf '%s\n' "2.1.83 must be below the TaskCreated boundary" >&2
+  exit 1
+fi
+claudex5_version_at_least "2.1.84" "2.1.84"
+claudex5_version_at_least "2.2.0" "2.1.84"
+
+cat > "$fake_root/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --version) printf '%s' "${FAKE_CLAUDE_VERSION:-2.1.226}" ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$fake_root/bin/claude"
+PATH="$fake_root/bin:/usr/bin:/bin" claudex5_claude_version
+FAKE_CLAUDE_VERSION='2.1.226 (Claude Code)' PATH="$fake_root/bin:/usr/bin:/bin" claudex5_claude_version
+for invalid in '2.1.84-beta.1' 'Claude Code 2.1.226 2.1.227' 'not a version' $'2.1.226\nextra'; do
+  if FAKE_CLAUDE_VERSION="$invalid" PATH="$fake_root/bin:/usr/bin:/bin" claudex5_claude_version >/dev/null; then
+    printf 'invalid Claude version output was accepted: %s\n' "$invalid" >&2
+    exit 1
+  fi
+done
+if PATH="/usr/bin:/bin" claudex5_claude_version >/dev/null; then
+  printf '%s\n' "missing Claude command must not produce a version" >&2
+  exit 1
+fi
+
+[[ "$(claudex5_hook_groups 0 0)" == $'SessionStart\nPreToolUse\nPostToolUse\nSubagentStart\nSubagentStop\nStop\nSessionEnd' ]]
+[[ "$(claudex5_hook_groups 0 1 | tail -n 1)" == "TaskCompleted" ]]
+[[ "$(claudex5_hook_groups 1 1 | tail -n 1)" == "TaskCreated" ]]
+
 enabled_plugins='Installed plugins:
 
   ❯ codex@openai-codex

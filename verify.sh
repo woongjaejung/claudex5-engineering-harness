@@ -52,6 +52,11 @@ scan_secret_candidates() {
     local normalized
     normalized="$(mktemp)"
     LC_ALL=C tr -d '\000' < "$source_file" > "$normalized"
+    # This fixed alphabetic test fixture exercises runtime redaction; it is
+    # not credential material and must not make every installer self-check fail.
+    sed 's/Bearer abcdefghijklmnopqrstuvwxyz012345/[REDACTED]/g' "$normalized" \
+      > "$normalized.redacted"
+    mv "$normalized.redacted" "$normalized"
     if LC_ALL=C grep -Eq 'sk-(proj-|ant-[A-Za-z0-9_-]*-)?[A-Za-z0-9_-]{20,}' "$normalized"; then
       fail "SECRET-KEY: likely OpenAI/Anthropic key content in $display_path"
     fi
@@ -122,6 +127,19 @@ if [[ "$secrets_only" -eq 1 ]]; then
 fi
 
 python_bin="$(claudex5_find_python)" || { fail "Python 3.11 or newer is not available"; python_bin=""; }
+enable_task_created=0
+enable_task_completed=0
+claude_version=""
+if claude_version="$(claudex5_claude_version)"; then
+  if claudex5_version_at_least "$claude_version" "2.1.33"; then
+    enable_task_completed=1
+  fi
+  if claudex5_version_at_least "$claude_version" "2.1.84"; then
+    enable_task_created=1
+  fi
+else
+  warn "Claude Code version is unavailable or unsupported; official task lifecycle hooks are optional"
+fi
 if [[ -n "$python_bin" ]]; then
   if "$python_bin" - "$repo_root" "$target_home" <<'PY'
 import json
@@ -177,17 +195,27 @@ for mapping in "${expected_links[@]}"; do
 done
 
 if [[ -n "$python_bin" && -f "$target_home/.claude/settings.json" ]]; then
-  if "$python_bin" - "$target_home/.claude/settings.json" "$repo_root" <<'PY'
+  if "$python_bin" - "$target_home/.claude/settings.json" "$repo_root" "$enable_task_created" "$enable_task_completed" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 settings = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 sys.path.insert(0, sys.argv[2])
-from scripts.merge_config import CLAUDEX5_HOOK_GROUPS
+from scripts.merge_config import selected_claudex5_hook_groups
 
 hooks = settings.get("hooks", {})
-raise SystemExit(0 if all(hooks.get(event, []).count(group) == 1 for event, group in CLAUDEX5_HOOK_GROUPS.items()) else 1)
+selected = selected_claudex5_hook_groups(
+    enable_task_created=sys.argv[3] == "1",
+    enable_task_completed=sys.argv[4] == "1",
+)
+raise SystemExit(
+    0 if all(
+        hooks.get(event, []).count(group) == 1
+        for event, groups in selected.items()
+        for group in groups
+    ) else 1
+)
 PY
   then
     pass "Claudex5 lifecycle hooks are installed exactly once"

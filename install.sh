@@ -42,6 +42,19 @@ if [[ "$skip_runtime" -eq 0 ]]; then
   command -v codex >/dev/null 2>&1 || claudex5_die "Codex CLI is required; use --bootstrap on a new Debian/Ubuntu system"
 fi
 
+enable_task_created=0
+enable_task_completed=0
+if claude_version="$(claudex5_claude_version)"; then
+  if claudex5_version_at_least "$claude_version" "2.1.33"; then
+    enable_task_completed=1
+  fi
+  if claudex5_version_at_least "$claude_version" "2.1.84"; then
+    enable_task_created=1
+  fi
+else
+  claudex5_warn "Claude Code version is unavailable or unsupported; installing base lifecycle hooks only"
+fi
+
 enable_spark=0
 if [[ "$skip_runtime" -eq 1 ]]; then
   claudex5_info "Spark availability check skipped; the Sonnet fallback remains active"
@@ -95,6 +108,8 @@ link_args=(--home "$target_home" --journal "$created_links_file")
 merge_args=(install --home "$target_home" --repo "$repo_root")
 [[ "$harden" -eq 1 ]] && merge_args+=(--harden)
 [[ "$enable_spark" -eq 1 ]] && merge_args+=(--enable-spark)
+[[ "$enable_task_created" -eq 1 ]] && merge_args+=(--enable-task-created)
+[[ "$enable_task_completed" -eq 1 ]] && merge_args+=(--enable-task-completed)
 "$python_bin" "$repo_root/scripts/merge_config.py" "${merge_args[@]}"
 claudex5_capture_config_state "$target_home" "$expected_state_file"
 

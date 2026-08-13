@@ -25,21 +25,48 @@ CLAUDEX5_HOOK_COMMAND = {
     "command": "~/.claude/hooks/claudex5-live-graph.py",
     "timeout": 5,
 }
-CLAUDEX5_HOOK_GROUPS = {
-    "SessionStart": {"hooks": [dict(CLAUDEX5_HOOK_COMMAND)]},
-    "PreToolUse": {
-        "matcher": "TaskCreate",
-        "hooks": [dict(CLAUDEX5_HOOK_COMMAND)],
-    },
-    "PostToolUse": {
-        "matcher": "TaskUpdate",
-        "hooks": [dict(CLAUDEX5_HOOK_COMMAND)],
-    },
-    "SubagentStart": {"hooks": [dict(CLAUDEX5_HOOK_COMMAND)]},
-    "SubagentStop": {"hooks": [dict(CLAUDEX5_HOOK_COMMAND)]},
-    "Stop": {"hooks": [dict(CLAUDEX5_HOOK_COMMAND)]},
-    "SessionEnd": {"hooks": [dict(CLAUDEX5_HOOK_COMMAND)]},
+
+
+def owned_group(matcher: str | None = None) -> dict:
+    """Build one exact Claudex5-owned lifecycle hook group."""
+    group = {"hooks": [dict(CLAUDEX5_HOOK_COMMAND)]}
+    if matcher is not None:
+        group["matcher"] = matcher
+    return group
+
+
+BASE_CLAUDEX5_HOOK_GROUPS = {
+    "SessionStart": (owned_group(),),
+    "PreToolUse": (owned_group(matcher="TaskCreate"),),
+    "PostToolUse": (
+        owned_group(matcher="TaskCreate"),
+        owned_group(matcher="TaskUpdate"),
+        owned_group(matcher="Agent"),
+    ),
+    "SubagentStart": (owned_group(),),
+    "SubagentStop": (owned_group(),),
+    "Stop": (owned_group(),),
+    "SessionEnd": (owned_group(),),
 }
+TASK_COMPLETED_HOOK_GROUPS = {"TaskCompleted": (owned_group(),)}
+TASK_CREATED_HOOK_GROUPS = {"TaskCreated": (owned_group(),)}
+CLAUDEX5_HOOK_GROUPS = {
+    **BASE_CLAUDEX5_HOOK_GROUPS,
+    **TASK_COMPLETED_HOOK_GROUPS,
+    **TASK_CREATED_HOOK_GROUPS,
+}
+
+
+def selected_claudex5_hook_groups(
+    enable_task_created: bool = False, enable_task_completed: bool = False
+) -> dict[str, tuple[dict, ...]]:
+    """Return the hook groups supported by the detected Claude Code version."""
+    selected = dict(BASE_CLAUDEX5_HOOK_GROUPS)
+    if enable_task_completed:
+        selected.update(TASK_COMPLETED_HOOK_GROUPS)
+    if enable_task_created:
+        selected.update(TASK_CREATED_HOOK_GROUPS)
+    return selected
 
 BASE_CODEX_AGENT_FILES = {
     "harness_sol_research": "harness-sol-research.toml",
@@ -133,7 +160,13 @@ def merge_instruction_file(path: Path, managed_body: str) -> None:
     atomic_write(path, merged, mode=0o644)
 
 
-def merge_claude_settings(path: Path, enable_plugin: bool, harden: bool = False) -> list[str]:
+def merge_claude_settings(
+    path: Path,
+    enable_plugin: bool,
+    harden: bool = False,
+    enable_task_created: bool = False,
+    enable_task_completed: bool = False,
+) -> list[str]:
     """Merge Claudex5-owned settings while retaining foreign values verbatim."""
     assert_safe_target(path)
     existing = path.read_text(encoding="utf-8") if path.exists() else "{}"
@@ -145,12 +178,20 @@ def merge_claude_settings(path: Path, enable_plugin: bool, harden: bool = False)
     hooks = settings.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise ValueError("hooks must be a JSON object")
-    for event, owned_group in CLAUDEX5_HOOK_GROUPS.items():
+    selected_groups = selected_claudex5_hook_groups(
+        enable_task_created=enable_task_created,
+        enable_task_completed=enable_task_completed,
+    )
+    for event, owned_groups in CLAUDEX5_HOOK_GROUPS.items():
         groups = hooks.setdefault(event, [])
         if not isinstance(groups, list):
             raise ValueError(f"hooks.{event} must be a JSON array")
-        if owned_group not in groups:
-            groups.append(owned_group)
+        retained = [group for group in groups if group not in owned_groups]
+        retained.extend(selected_groups.get(event, ()))
+        if retained:
+            hooks[event] = retained
+        else:
+            hooks.pop(event, None)
     if "subagentStatusLine" not in settings:
         settings["subagentStatusLine"] = dict(CLAUDEX5_SUBAGENT_STATUS_LINE)
     elif settings["subagentStatusLine"] != CLAUDEX5_SUBAGENT_STATUS_LINE:
@@ -335,11 +376,11 @@ def remove_harness_config(home: Path) -> None:
             changed = False
             hooks = settings.get("hooks")
             if isinstance(hooks, dict):
-                for event, owned_group in CLAUDEX5_HOOK_GROUPS.items():
+                for event, owned_groups in CLAUDEX5_HOOK_GROUPS.items():
                     groups = hooks.get(event)
                     if not isinstance(groups, list):
                         continue
-                    retained = [group for group in groups if group != owned_group]
+                    retained = [group for group in groups if group not in owned_groups]
                     if retained != groups:
                         changed = True
                     if retained:
@@ -381,7 +422,12 @@ def remove_harness_config(home: Path) -> None:
 
 
 def install_from_repository(
-    home: Path, repository: Path, harden: bool, enable_spark: bool = False
+    home: Path,
+    repository: Path,
+    harden: bool,
+    enable_spark: bool = False,
+    enable_task_created: bool = False,
+    enable_task_completed: bool = False,
 ) -> list[str]:
     global _WRITE_JOURNAL
     targets = (
@@ -406,7 +452,15 @@ def install_from_repository(
             targets[1],
             (repository / "codex" / "managed-AGENTS.md").read_text(encoding="utf-8"),
         )
-        warnings.extend(merge_claude_settings(targets[2], True, harden))
+        warnings.extend(
+            merge_claude_settings(
+                targets[2],
+                True,
+                harden,
+                enable_task_created=enable_task_created,
+                enable_task_completed=enable_task_completed,
+            )
+        )
         warnings.extend(
             merge_codex_config(
                 targets[3], home / ".codex" / "agents", harden, enable_spark=enable_spark
@@ -437,6 +491,8 @@ def main() -> int:
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--harden", action="store_true")
     parser.add_argument("--enable-spark", action="store_true")
+    parser.add_argument("--enable-task-created", action="store_true")
+    parser.add_argument("--enable-task-completed", action="store_true")
     args = parser.parse_args()
 
     home = args.home.expanduser().resolve()
@@ -444,7 +500,12 @@ def main() -> int:
         parser.error("--home must not be /")
     if args.action == "install":
         for warning in install_from_repository(
-            home, args.repo.resolve(), args.harden, enable_spark=args.enable_spark
+            home,
+            args.repo.resolve(),
+            args.harden,
+            enable_spark=args.enable_spark,
+            enable_task_created=args.enable_task_created,
+            enable_task_completed=args.enable_task_completed,
         ):
             print(f"WARNING: {warning}")
     else:
