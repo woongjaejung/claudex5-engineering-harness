@@ -36,9 +36,17 @@ flowchart TD
     W -->|"No"| O["Main session coordinates the workflow"]
     SW --> A["Claudex5 routing adapter<br/>selects roles and models"]
     A --> O
-    O --> R["Claude Sonnet 5 high<br/>read-only research"]
-    O --> I["Claude Sonnet 5 high<br/>primary implementation"]
-    O --> SR["Codex Sol high<br/>independent difficult-problem research"]
+    O --> PG{"Fable plan gate<br/>complex or high risk?"}
+    PG -->|"No"| E["Begin bounded execution"]
+    PG -->|"Yes"| PR["Codex Sol high · fresh read-only<br/>plan review"]
+    PR -->|"APPROVE"| E
+    PR -->|"NEEDS CHANGES"| RV["Fable revises once"]
+    RV --> RR["One fresh Sol recheck"]
+    RR -->|"APPROVE"| E
+    RR -->|"Blocking findings remain"| H["Stop before implementation<br/>ask the user"]
+    E --> R["Claude Sonnet 5 high<br/>read-only research"]
+    E --> I["Claude Sonnet 5 high<br/>primary implementation"]
+    E --> SR["Codex Sol high<br/>independent difficult-problem research"]
     SR --> LI["Codex Luna max<br/>bounded alternative implementation"]
     SP --> G
     I --> AR["Claude Opus 5 high<br/>architecture review"]
@@ -66,6 +74,7 @@ Superpowers and Claudex5 therefore complement each other:
 | Role | Model / effort | When it runs | Automatic or manual |
 |---|---|---|---|
 | Main coordinator | Current Claude session; Fable 5 high recommended | Owns requirements, routing, integration, and final verification | Automatic for complex work |
+| Plan reviewer | Codex Sol / high, fresh read-only context | Before implementation when a plan is complex or high risk | Automatic and conditional; one recheck maximum |
 | Researcher | Claude Sonnet 5 / high | Repository exploration before unclear implementation | Automatic when useful |
 | Implementer | Claude Sonnet 5 / high | Primary scoped implementation | Automatic |
 | Fast UI iteration | Codex-Spark | One small change to an existing UI, only when account access is confirmed | Automatic and conditional; Sonnet fallback |
@@ -161,6 +170,16 @@ For a complex request, the global instructions tell the main session to investig
 
 If Superpowers chooses `subagent-driven-development` or `executing-plans`, the main session loads the Claudex5 routing adapter automatically. Superpowers continues its normal task loop, but task implementers and reviewers come from the Claudex5 matrix. You do not need to name the adapter or answer a second execution-mode question.
 
+Before implementation, Fable keeps ownership of the plan and conditionally asks a fresh, read-only Codex Sol high context to validate it. The gate runs when any of these conditions apply:
+
+- the plan crosses multiple modules or services;
+- it affects authentication, authorization, security, data migration, or destructive state;
+- rollback is difficult, the architecture changes materially, or operational risk is high;
+- the problem is ambiguous or has multiple viable approaches with meaningful trade-offs; or
+- the plan contains five or more executable tasks.
+
+Routine simple plans skip the gate. The reviewer returns `APPROVE` or `NEEDS CHANGES`. Fable may revise once and request one fresh recheck. If blocking findings remain, the harness stops before implementation and asks you instead of looping or silently approving the plan. In a task UI, look for `[Codex Sol · high] Plan review`.
+
 Running Claudex5 Claude subagents show their role, configured model, effort, and task description:
 
 ```text
@@ -220,6 +239,7 @@ Use these only when Fable/Sonnet is unavailable, a prior role returned evidence 
 Inside Claude Code, use the official plugin commands:
 
 ```text
+/codex:rescue --fresh --model gpt-5.6-sol --effort high [Codex Sol · high] Plan review: Review the complete implementation plan read-only and return APPROVE or NEEDS CHANGES.
 /codex:rescue --fresh --model gpt-5.6-sol --effort high Independently investigate the cause of this failure and possible alternatives.
 /codex:review --background
 /codex:adversarial-review --background Focus on authentication bypasses, data loss, race conditions, and rollback failures.
@@ -259,6 +279,7 @@ Use `--sandbox read-only` instead when the task is research or review. Do not de
 Run `codex` normally. The global `~/.codex/AGENTS.md` routing policy and registered `harness_*` agents are available. You can explicitly request one:
 
 ```text
+Use harness_sol_plan_review in a fresh read-only context to validate this implementation plan before any code changes.
 Use harness_sol_adversarial_review to review the current change without editing files.
 ```
 
@@ -267,6 +288,7 @@ Use harness_sol_adversarial_review to review the current change without editing 
 Automatic:
 
 - Task complexity classification
+- Conditional fresh Codex Sol plan review before complex or high-risk implementation
 - Account-aware Spark routing for one small existing-UI change, with automatic Sonnet fallback
 - Read-only research before unclear implementation
 - Sonnet implementation for scoped work
@@ -277,6 +299,7 @@ Automatic:
 
 Manual or explicitly confirmed:
 
+- Proceeding with a high-risk plan when independent Sol plan review is unavailable or remains blocked after one recheck
 - Fable → Opus fallback
 - Sonnet implementer → Opus implementer escalation
 - Luna alternative implementation when the task is not already tightly bounded
@@ -373,6 +396,8 @@ codex login status
 ```
 
 `verify.sh` warns when current Spark access and the installed role disagree. A temporary network or authentication failure does not break installation; Sonnet remains the fallback. If access is later restored, rerun the installer.
+
+If Codex Sol is unavailable during a plan review, the harness must disclose that the plan was not independently validated. A routine task may continue without the optional gate. For a high-risk plan, choose whether to wait for Sol, proceed without independent validation, or request a manual Opus review; the harness must not make that choice silently.
 
 ### Claude does not show a newly installed agent
 

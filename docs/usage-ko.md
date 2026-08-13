@@ -22,7 +22,7 @@ claude
 둘의 책임은 다음처럼 나뉩니다.
 
 - Superpowers: 계획, 작업공간(worktree), 작업 원장, 태스크 반복, 체크포인트, 리뷰 게이트
-- Claudex5: 조사자·구현자·리뷰어·판정자와 각 모델 선택, Spark 조건부 사용, 최종 실제 테스트
+- Claudex5: 계획 검증자·조사자·구현자·리뷰어·판정자와 각 모델 선택, Spark 조건부 사용, 최종 실제 테스트
 
 Superpowers가 `subagent-driven-development` 또는 `executing-plans`를 선택하면 전역 지침이 `claudex5-subagent-routing`을 자동으로 로드합니다. 사용자는 평소처럼 “1번 방식으로 오케스트레이션해줘”라고 말하면 되고, 실행 방식을 두 번 고를 필요가 없습니다.
 
@@ -40,6 +40,18 @@ harness-judge [Claude Fable 5 · high] · 리뷰 근거 판정
 Claude Code에서 `/agents`를 열면 실행 중인 서브에이전트를, `/tasks`를 열면 현재 세션의 백그라운드 작업을 확인할 수 있습니다. 이 표시는 이름이 정확히 `harness-*`인 Claudex5 역할에만 적용되므로 Superpowers와 다른 플러그인 에이전트의 기본 표시는 바뀌지 않습니다.
 
 공식 Codex 플러그인의 Sol·Luna·Spark 작업은 Claude 커스텀 서브에이전트가 아니므로 같은 상태줄 매핑을 사용하지 않습니다. 대신 호출 화면이 작업 설명을 지원하면 `[Codex Sol · high]`, `[Codex Luna · max]`, `[Codex-Spark]` 접두사를 붙입니다.
+
+## 구현 전 계획 검증
+
+Fable 5는 계속 계획의 소유자입니다. 다음 조건 중 하나라도 해당하면 구현을 시작하기 전에 새 맥락의 읽기 전용 Codex Sol high가 계획을 독립 검증합니다.
+
+- 여러 모듈이나 서비스에 걸치는 계획
+- 인증, 권한, 보안, 데이터 마이그레이션 또는 상태 삭제·파괴가 포함된 계획
+- 롤백이 어렵거나 구조 변경 또는 운영 위험이 큰 계획
+- 요구사항이 모호하거나 의미 있는 장단점을 가진 대안이 여러 개인 계획
+- 실행할 태스크가 5개 이상인 계획
+
+단순하고 일상적인 계획은 이 단계를 건너뜁니다. 검토 결과는 `APPROVE` 또는 `NEEDS CHANGES`입니다. 수정이 필요하면 Fable이 한 번 고치고 새 Sol 맥락에서 한 번만 재검토합니다. 그래도 막는 문제가 남으면 구현 전에 멈추고 사용자에게 방향을 묻습니다. 백그라운드 작업 화면에서는 `[Codex Sol · high] Plan review`라는 이름으로 확인할 수 있습니다.
 
 ## 설치
 
@@ -142,6 +154,7 @@ harness-architecture-reviewer로 현재 변경의 모듈 경계와 롤백 위험
 Claude Code 안에서 Codex를 새 맥락으로 호출:
 
 ```text
+/codex:rescue --fresh --model gpt-5.6-sol --effort high [Codex Sol · high] Plan review: 전체 구현 계획을 읽기 전용으로 검토하고 APPROVE 또는 NEEDS CHANGES로 답해줘.
 /codex:rescue --fresh --model gpt-5.6-sol --effort high 이 문제의 원인과 대안을 독립 조사해줘
 /codex:review --background
 /codex:adversarial-review --background 인증 우회와 데이터 손실 가능성을 공격적으로 검토해줘
@@ -160,11 +173,18 @@ codex exec --ephemeral --model gpt-5.6-luna \
 
 조사나 리뷰처럼 파일을 바꾸면 안 되는 작업은 `--sandbox read-only`를 사용합니다. 플러그인의 `xhigh` 실행을 `max`라고 보고하지 않습니다.
 
+Codex를 직접 사용할 때는 다음처럼 등록된 역할을 지정할 수 있습니다.
+
+```text
+harness_sol_plan_review 역할을 새 읽기 전용 맥락으로 사용해서 코드 변경 전에 이 구현 계획을 검증해줘.
+```
+
 ## 자동 동작과 수동 fallback
 
 자동으로 맡기는 항목:
 
 - 작업 규모와 위험도 분류
+- 복잡하거나 위험한 계획의 구현 전 Codex Sol 독립 검증
 - 접근 가능할 때만 작은 기존 UI 수정에 Spark 사용, 불가능하면 Sonnet으로 자동 전환
 - 필요한 경우 Sonnet 조사·구현 역할 호출
 - 의미 있는 변경에 대한 독립 검토
@@ -173,6 +193,7 @@ codex exec --ephemeral --model gpt-5.6-luna \
 
 수동 선택을 남기는 항목:
 
+- Sol 계획 검증이 불가능하거나 한 번의 재검토 뒤에도 막혔을 때 기다릴지, 독립 검증 없이 진행할지, Opus 검토로 대체할지 선택
 - Fable 오케스트레이터 또는 판정자가 unavailable일 때 Opus 전환
 - Sonnet 구현이 근거와 함께 막혔을 때 Opus 구현 승격
 - 범위가 애매한 상태에서 Luna에게 구현을 맡기는 결정
@@ -271,6 +292,8 @@ codex login --device-auth
 ```
 
 모델을 사용할 수 없을 때는 `/model`에서 사용 가능한 Claude 모델을 확인하고 위 Opus 대체 역할을 수동으로 선택합니다. 저장소 경로를 옮겨 링크가 끊어졌다면 출력된 `harness-*` 심볼릭 링크만 확인해 제거한 뒤 새 위치에서 `./install.sh`를 다시 실행합니다.
+
+고위험 계획을 검토할 Codex Sol을 사용할 수 없다면 하네스는 독립 검증이 실행되지 않았다고 명시해야 합니다. 단순 작업은 선택적 단계를 건너뛸 수 있지만, 고위험 작업은 Sol을 기다릴지, 독립 검증 없이 진행할지, Opus 수동 검토로 대체할지를 사용자가 선택합니다. 하네스가 조용히 대신 결정하지 않습니다.
 
 Spark 상태가 현재 계정과 맞지 않는다는 경고가 나오면 다음을 실행합니다.
 
