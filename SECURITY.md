@@ -24,7 +24,9 @@ This project protects its own managed configuration workflow. It does not secure
 
 The installer intentionally does not read or copy Claude/Codex authentication files. `verify.sh` detects common credential formats but cannot prove that arbitrary prose contains no sensitive business data. Review every staged diff before publishing.
 
-The live graph recorder uses an allowlist. It stores only sanitized task labels, logical identifiers, lifecycle state, dependencies, and known role/model/effort metadata. It does not store prompts, code, shell commands, tool output, assistant messages, transcript paths, environment variables, authentication state, or model catalogs.
+The live graph recorder uses an allowlist. It stores only sanitized logical identifiers, lifecycle state, dependencies, known role/model/effort metadata, task subjects, and task or agent descriptions. A description is bounded to 160 characters. It does not store code, shell commands, tool output, environment variables, authentication state, or model catalogs.
+
+For Agent hook data specifically, the recorder must reject and never persist `prompt`, response content, `outputFile`, usage telemetry, or transcript paths. These fields can contain user instructions, generated output, local paths, or account activity and are outside the dashboard's allowlist.
 
 Runtime graph data remains outside the repository under `${XDG_STATE_HOME:-~/.local/state}/claudex5-engineering-harness/runs`, with private directory and file permissions. It is not copied during installation and is preserved during uninstall unless the user explicitly runs `claudex5 clean --all`.
 

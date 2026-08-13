@@ -213,29 +213,40 @@ New Claude Code sessions are collected automatically after installation. Collect
 
 ```mermaid
 flowchart LR
-    CH["Claude lifecycle hooks"] --> R["Safe event recorder"]
-    CX["Observable Codex wrapper"] --> R
-    QG["Quality-gate wrapper"] --> R
-    R --> EL["Private append-only event log"]
-    EL --> SS["Atomic run snapshot"]
-    SS --> TV["Terminal graph"]
-    SS --> WV["Loopback web + SVG graph"]
+    H["Claude lifecycle hooks<br/>Codex and quality-gate wrappers"] --> R["Safe event recorder"]
+    R --> L["Private append-only logs"]
+    L --> S["Atomic private snapshots"]
+    S --> X["Shared session selector"]
+    X --> T["Terminal dashboard"]
+    X --> E["One SSE stream<br/>per browser selection"]
+    E --> G["Project-grouped web grid<br/>and focused session graph"]
 ```
 
-Open a continuously updating terminal graph in a second terminal:
+List retained sessions, then open a continuously updating terminal graph in a second terminal:
 
 ```bash
+claudex5 sessions
 claudex5 dashboard
 ```
 
-Print one snapshot, or open the local web graph:
+`dashboard` first uses one running session from the current project directory. If none is running, it uses that directory's single retained session. In an interactive terminal, any remaining ambiguity opens the selector; `--select` always opens it. In a non-interactive command (including `--once`), ambiguity is an error rather than a prompt, so select deterministically with `--session-id` or `--all`.
+
+```bash
+claudex5 dashboard --select
+claudex5 dashboard --session-id session-123
+claudex5 dashboard --all
+```
+
+Print one selected snapshot, or open the local web graph:
 
 ```bash
 claudex5 dashboard --once
 claudex5 dashboard --web
 ```
 
-The graph shows task, agent, review, judge, and quality-gate nodes; dependency and parent-child edges; current state; and known role/model/effort. Automatic Codex roles use `claudex5 codex-run`, and project-template checks use `claudex5 gate-run`, so their real process exit states appear in the same graph. Manual `/codex:*` plugin calls remain supported but appear only when the plugin exposes enough lifecycle information.
+`--all` groups the web grid by project directory, keeps running sessions visible, and places the most recent completed session for each project behind a collapsed “Completed sessions” disclosure. Select a card to focus its graph and its safe task details. The graph shows task, agent, review, judge, and quality-gate nodes; dependency and parent-child edges; current state; and known role/model/effort. Task subjects and safe descriptions are shown separately; descriptions are bounded to 160 characters. Durations use lifecycle timestamps and say that a duration is unknown when timestamps are missing or unreliable. Automatic Codex roles use `claudex5 codex-run`, and project-template checks use `claudex5 gate-run`, so their real process exit states appear in the same graph. Manual `/codex:*` plugin calls remain supported but appear only when the plugin exposes enough lifecycle information.
+
+The browser keeps one Server-Sent Events (SSE) stream for its current selection. The server sends an initial snapshot, then only changed revisions, plus keepalive comments. If SSE disconnects or is unavailable, the browser retries the stream and uses snapshot polling every 5 seconds until SSE is healthy again; stale responses are ignored after a selection changes.
 
 The web server accepts only loopback hosts and defaults to `127.0.0.1:8765`. On a remote computer or server, keep it bound there and create an SSH (Secure Shell) tunnel from your local computer:
 
@@ -243,7 +254,7 @@ The web server accepts only loopback hosts and defaults to `127.0.0.1:8765`. On 
 ssh -L 8765:127.0.0.1:8765 user@example-server
 ```
 
-Then open `http://127.0.0.1:8765/` locally. No external assets, analytics, prompts, code, commands, tool output, assistant messages, transcript paths, environment variables, credentials, or model catalogs are collected. Sanitized lifecycle state is stored with private permissions under `${XDG_STATE_HOME:-~/.local/state}/claudex5-engineering-harness/runs` and remains on that machine.
+Then open `http://127.0.0.1:8765/` locally. No external assets or analytics are loaded. The recorder keeps only allowlisted, sanitized lifecycle metadata: logical identifiers, state, dependencies, known role/model/effort, task subject, and a description limited to 160 characters. It never records a prompt, response content, `outputFile`, usage telemetry, transcript paths, code, commands, tool output, environment variables, credentials, or model catalogs. Sanitized lifecycle state is stored with private permissions under `${XDG_STATE_HOME:-~/.local/state}/claudex5-engineering-harness/runs` and remains on that machine.
 
 Inspect or remove runtime history:
 
@@ -253,7 +264,7 @@ claudex5 clean --days 7
 claudex5 clean --all
 ```
 
-Uninstall preserves this history by default. If the dashboard is empty, start a new Claude Code session after installation. If the web port is busy, choose another loopback port with `claudex5 dashboard --web --port 8766`.
+Uninstall preserves this history by default. Use `claudex5 clean --all` before uninstalling only when you intentionally want to delete it. If the dashboard is empty, start a new Claude Code session after installation. If a command reports ambiguous dashboard selection, rerun it with `--session-id`, `--all`, or (only in an interactive terminal) `--select`. If the web port is busy, choose another loopback port with `claudex5 dashboard --web --port 8766`. A reconnecting web status is safe: the five-second polling fallback keeps the display current while SSE reconnects.
 
 ## Explicit role calls
 
@@ -401,9 +412,7 @@ Currently this disables Claude's dangerous-mode warning bypass and removes only 
 
 ```bash
 cd /path/to/claudex5-engineering-harness
-git pull --ff-only
-./install.sh
-./verify.sh --strict
+git pull --ff-only && ./install.sh && ./verify.sh --strict
 ```
 
 Linked agent definitions, the model-row renderer, the `claudex5` command, and the hook update immediately. Rerunning the installer refreshes managed instructions and settings hooks, then reconciles the account-gated Spark role on that machine.
