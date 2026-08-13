@@ -324,11 +324,13 @@ class StateStore:
     ) -> bool:
         if not _valid_snapshot(snapshot, session_id):
             return False
-        event_stat = self._event_log_stat(run_dir)
-        if event_stat is None:
-            return True
         marker_size = snapshot.get("_event_log_size")
         marker_mtime = snapshot.get("_event_log_mtime_ns")
+        event_stat = self._event_log_stat(run_dir)
+        if event_stat is None:
+            if isinstance(marker_size, int):
+                snapshot["degraded"] = True
+            return True
         if marker_size is not None or marker_mtime is not None:
             if isinstance(marker_size, int) and event_stat.st_size < marker_size:
                 snapshot["degraded"] = True
@@ -348,18 +350,18 @@ class StateStore:
         events_path = run_dir / "events.jsonl"
         self._reject_symlink(events_path)
         try:
-            lines = events_path.read_text(encoding="utf-8").splitlines()
-        except (FileNotFoundError, OSError, UnicodeError):
+            lines = events_path.read_bytes().splitlines()
+        except (FileNotFoundError, OSError):
             return None
         valid_events: list[dict[str, object]] = []
         degraded = False
         durable_sequence = 0
         for index, line in enumerate(lines):
             try:
-                value = json.loads(line)
+                value = json.loads(line.decode("utf-8"))
                 if not isinstance(value, dict):
                     raise ValueError
-            except (json.JSONDecodeError, ValueError):
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
                 if index != len(lines) - 1:
                     degraded = True
                 continue
@@ -428,12 +430,10 @@ class StateStore:
                 snapshot = new_snapshot(session_id, str(safe_payload.get("cwd", "")), timestamp)
             event_stat = self._event_log_stat(run_dir)
             marker_size = snapshot.get("_event_log_size")
-            if (
-                event_stat is not None
-                and isinstance(marker_size, int)
-                and event_stat.st_size < marker_size
+            if isinstance(marker_size, int) and (
+                event_stat is None or event_stat.st_size < marker_size
             ):
-                raise ValueError("event log was truncated; refusing to append")
+                raise ValueError("event log is missing or truncated; refusing to append")
             durable_sequence = int(snapshot.get("_event_log_sequence", snapshot.get("sequence", 0)))
             sequence = max(int(snapshot.get("sequence", 0)), durable_sequence) + 1
             event: dict[str, object] = {
@@ -451,14 +451,18 @@ class StateStore:
             events_path = run_dir / "events.jsonl"
             descriptor = self._open_private(events_path, os.O_CREAT | os.O_APPEND | os.O_WRONLY)
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                separated_partial = False
                 if event_stat is not None and event_stat.st_size > 0:
                     with events_path.open("rb") as existing:
                         existing.seek(-1, os.SEEK_END)
                         if existing.read(1) != b"\n":
                             stream.write("\n")
+                            separated_partial = True
                 stream.write(json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
                 stream.flush()
                 os.fsync(stream.fileno())
+            if separated_partial:
+                next_snapshot["degraded"] = True
             self._mark_event_log(next_snapshot, self._event_log_stat(run_dir), sequence)
             self._write_snapshot(run_dir, next_snapshot)
             return event

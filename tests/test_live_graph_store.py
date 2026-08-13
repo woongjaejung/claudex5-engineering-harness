@@ -210,6 +210,7 @@ class StateStoreTests(unittest.TestCase):
             "session-1", "checkpoint", "session:session-1", {"label": "after crash"}
         )
         self.assertEqual(appended["sequence"], 2)
+        self.assertTrue(StateStore(self.root).load("session-1")["degraded"])
         log_text = (run_dir / "events.jsonl").read_text(encoding="utf-8")
         self.assertIn('{"partial":\n{"event_id"', log_text)
 
@@ -218,6 +219,48 @@ class StateStoreTests(unittest.TestCase):
         self.assertEqual(recovered["sequence"], 2)
         self.assertEqual([item["label"] for item in recovered["checkpoints"]], ["after crash"])
         self.assertTrue(recovered["degraded"])
+
+    def test_append_after_partial_utf8_final_line_remains_recoverable(self) -> None:
+        self.start()
+        run_dir = self.root / "session-1"
+        with (run_dir / "events.jsonl").open("ab") as stream:
+            stream.write(b'{"partial":"\xea')
+            stream.flush()
+            os.fsync(stream.fileno())
+
+        appended = StateStore(self.root).append(
+            "session-1", "checkpoint", "session:session-1", {"label": "after utf8 crash"}
+        )
+        self.assertEqual(appended["sequence"], 2)
+        self.assertTrue(StateStore(self.root).load("session-1")["degraded"])
+
+        (run_dir / "snapshot.json").unlink()
+        recovered = StateStore(self.root).load("session-1")
+        self.assertEqual(recovered["sequence"], 2)
+        self.assertEqual(
+            [item["label"] for item in recovered["checkpoints"]], ["after utf8 crash"]
+        )
+        self.assertTrue(recovered["degraded"])
+
+    def test_missing_marked_event_log_preserves_snapshot_and_blocks_append(self) -> None:
+        self.start()
+        self.store.append(
+            "session-1", "task.created", "task:newer", {"kind": "task", "label": "Newer"}
+        )
+        run_dir = self.root / "session-1"
+        snapshot_before = (run_dir / "snapshot.json").read_bytes()
+        (run_dir / "events.jsonl").unlink()
+
+        loaded = StateStore(self.root).load("session-1")
+
+        self.assertEqual(loaded["sequence"], 2)
+        self.assertIn("task:newer", loaded["nodes"])
+        self.assertTrue(loaded["degraded"])
+        self.assertEqual((run_dir / "snapshot.json").read_bytes(), snapshot_before)
+        with self.assertRaisesRegex(ValueError, "missing or truncated"):
+            StateStore(self.root).append(
+                "session-1", "checkpoint", "session:session-1", {"label": "must stop"}
+            )
 
     def test_semantically_invalid_high_sequence_event_keeps_later_log_monotonic(self) -> None:
         self.start()
