@@ -149,6 +149,24 @@ class WebDashboardAssetTests(unittest.TestCase):
         self.assertEqual(rendered["inFlight"], 1)
         self.assertEqual(rendered["maxInFlight"], 1)
 
+    def test_healthy_sse_aborts_pending_poll_and_failure_can_start_one_replacement(self) -> None:
+        rendered = run_app_script("""
+          const {createTransport}=await import(process.env.APP_URL); const jobs=[];let serial=0;const streams=[];let attempts=0;let inFlight=0;let max=0;let aborted=false;
+          const timers={setTimeout(fn,delay){const job={id:++serial,fn,delay,cleared:false};jobs.push(job);return job.id},clearTimeout(id){const job=jobs.find((x)=>x.id===id);if(job)job.cleared=true}};
+          class Source{constructor(){this.listeners={};streams.push(this)}addEventListener(name,fn){this.listeners[name]=fn}close(){this.closed=true}}
+          const fetchImpl=(_url,{signal}={})=>new Promise((_resolve,reject)=>{attempts++;inFlight++;max=Math.max(max,inFlight);signal.addEventListener('abort',()=>{aborted=true;inFlight--;reject(new DOMException('abort','AbortError'))},{once:true})});
+          const transport=createTransport({EventSourceImpl:Source,fetchImpl,timers,onBundle:()=>{},onConnection:()=>{},onElapsed:()=>{}});
+          transport.open('session=a',1); streams[0].listeners.error(); jobs.filter((job)=>job.delay===5000&&!job.cleared).at(0).fn(); jobs.filter((job)=>job.delay===5000&&!job.cleared).at(-1).fn(); await Promise.resolve();
+          streams[1].listeners.snapshot({data:JSON.stringify({revision:'sse'})}); const afterHealthy=transport.state();
+          streams[1].listeners.error(); jobs.find((job)=>job.delay===5000&&!job.cleared).fn();
+          console.log(JSON.stringify({aborted,attempts,inFlight,max,afterHealthy,state:transport.state()}));
+        """)
+        self.assertTrue(rendered["aborted"])
+        self.assertFalse(rendered["afterHealthy"]["pollingInFlight"])
+        self.assertEqual(rendered["attempts"], 2)
+        self.assertEqual(rendered["inFlight"], 1)
+        self.assertEqual(rendered["max"], 1)
+
     def test_candidate_poll_snapshot_keeps_rollback_window_until_sse_snapshot(self) -> None:
         rendered = run_app_script("""
           const {createSelectionController}=await import(process.env.APP_URL); const resolvers=[]; const events=[]; const catalogs=[];

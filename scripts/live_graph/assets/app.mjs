@@ -152,6 +152,7 @@ export function createTransport({EventSourceImpl, fetchImpl, timers = globalThis
     try {
       const bundle = JSON.parse(event.data);
       streamHealthy = true;
+      abortPoll();
       clear(fallbackTimer); fallbackTimer = null;
       clear(retryTimer); retryTimer = null;
       onConnection("connected");
