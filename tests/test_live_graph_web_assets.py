@@ -136,6 +136,20 @@ class WebDashboardAssetTests(unittest.TestCase):
         """)
         self.assertEqual(rendered["calls"], [["connection", "reconnecting"], ["start", "selection=all"]])
 
+    def test_snapshot_timeout_remains_active_until_json_body_finishes(self) -> None:
+        rendered = run_app_script("""
+          const {bootstrapDashboard,FETCH_TIMEOUT_MS}=await import(process.env.APP_URL); const jobs=[]; let signal; const calls=[];
+          const timers={setTimeout(fn,delay){jobs.push({fn,delay,cleared:false});return jobs.length},clearTimeout(id){if(jobs[id-1])jobs[id-1].cleared=true}};
+          const fetchImpl=(_url,options={})=>{signal=options.signal;return Promise.resolve({ok:true,json:()=>new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(new DOMException('timeout','AbortError')),{once:true}))})};
+          bootstrapDashboard({query:'selection=all',fetchImpl,timers,controller:{seed:()=>calls.push('seed'),start:()=>calls.push('start')},onInitialFailure:()=>calls.push('reconnecting')});
+          await Promise.resolve(); await Promise.resolve(); const timeout=jobs.find((job)=>job.delay===FETCH_TIMEOUT_MS&&!job.cleared); timeout.fn();
+          await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+          console.log(JSON.stringify({aborted:signal.aborted,calls,timeoutCleared:timeout.cleared}));
+        """)
+        self.assertTrue(rendered["aborted"])
+        self.assertEqual(rendered["calls"], ["reconnecting", "start"])
+        self.assertTrue(rendered["timeoutCleared"])
+
     def test_transport_keeps_one_stream_falls_back_and_stops_polling_on_sse(self) -> None:
         rendered = run_app_script("""
           const {createTransport} = await import(process.env.APP_URL);

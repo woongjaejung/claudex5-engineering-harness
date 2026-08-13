@@ -118,16 +118,16 @@ function snapshotRequest(fetchImpl, query, timers = globalThis) {
     controller?.abort();
     if (timer !== null) timers.clearTimeout(timer);
   };
+  const finish = () => {
+    settled = true;
+    if (timer !== null) timers.clearTimeout(timer);
+  };
   let response;
   try { response = fetchImpl?.(`/api/snapshot?${query}`, controller ? {signal: controller.signal} : {}); }
   catch (error) { response = Promise.reject(error); }
   const promise = Promise.resolve(response);
   timer = timers.setTimeout(abort, FETCH_TIMEOUT_MS);
-  promise.then(
-    () => { settled = true; if (timer !== null) timers.clearTimeout(timer); },
-    () => { settled = true; if (timer !== null) timers.clearTimeout(timer); },
-  );
-  return {promise, controller, abort};
+  return {promise, controller, abort, finish};
 }
 
 export function createTransport({EventSourceImpl, fetchImpl, timers = globalThis, onBundle = () => {}, onConnection = () => {}, onElapsed = () => {}, onInitialFailure = () => {}} = {}) {
@@ -173,6 +173,7 @@ export function createTransport({EventSourceImpl, fetchImpl, timers = globalThis
       if (attempt !== pollAttempt || !canApplyPollResult(selectionGeneration, generation, streamHealthy) || stopped) return;
       onBundle(bundle, {source: "poll", generation});
     }).catch(() => {}).finally(() => {
+      request.finish();
       if (attempt !== pollAttempt) return;
       pollInFlight = false;
       if (pollRequest === request) pollRequest = null;
@@ -279,6 +280,9 @@ export function createSelectionController({fetchImpl, transport, timers = global
       } catch (error) {
         if (attempt === selectionAttemptGeneration && !isAbortError(error, request.controller)) { sync(query); onError("Selection unavailable"); }
         return false;
+      } finally {
+        request.finish();
+        if (candidateRequest === request) candidateRequest = null;
       }
       if (attempt !== selectionAttemptGeneration) return false;
       commit(candidate, nextBundle); return true;
@@ -295,6 +299,10 @@ export function createSelectionController({fetchImpl, transport, timers = global
       confirmationRequest = request;
       let response;
       try { response = await request.promise; } catch { return; }
+      finally {
+        request.finish();
+        if (confirmationRequest === request) confirmationRequest = null;
+      }
       if (generation !== selectionGeneration || !candidateAwaitingFirstSnapshot || response?.status !== 404 || !previous) return;
       const restore = previous; previous = null; selectionGeneration += 1; query = restore.query; bundle = restore.bundle;
       candidateAwaitingFirstSnapshot = false;
@@ -411,7 +419,7 @@ export function queryFromLocation(location = window.location) { const params=new
 
 export function bootstrapDashboard({controller, query, fetchImpl, timers = globalThis, onInitialFailure = () => {}} = {}) {
   const request = snapshotRequest(fetchImpl, normaliseQuery(query), timers);
-  request.promise.then((response) => response?.ok ? response.json() : Promise.reject()).then((bundle) => controller.seed(query, bundle)).catch(() => { onInitialFailure(); controller.start(query); });
+  request.promise.then((response) => response?.ok ? response.json() : Promise.reject()).then((bundle) => controller.seed(query, bundle)).catch(() => { onInitialFailure(); controller.start(query); }).finally(() => request.finish());
   return request;
 }
 
