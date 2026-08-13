@@ -153,6 +153,7 @@ for instruction in "$target_home/.claude/CLAUDE.md" "$target_home/.codex/AGENTS.
 done
 
 expected_links=(
+  "$target_home/.claude/statuslines/claudex5-subagent-models.py:$repo_root/claude/statuslines/claudex5-subagent-models.py"
   "$target_home/.claude/skills/claudex5-subagent-routing/SKILL.md:$repo_root/claude/skills/claudex5-subagent-routing/SKILL.md"
   "$target_home/.claude/agents/harness-orchestrator.md:$repo_root/claude/agents/harness-orchestrator.md"
   "$target_home/.claude/agents/harness-researcher.md:$repo_root/claude/agents/harness-researcher.md"
@@ -171,6 +172,45 @@ for mapping in "${expected_links[@]}"; do
     fail "missing or incorrect managed link: $link_path"
   fi
 done
+
+if [[ -n "$python_bin" && -f "$target_home/.claude/settings.json" ]]; then
+  subagent_status_state="$($python_bin - "$target_home/.claude/settings.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+settings = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+expected = {
+    "type": "command",
+    "command": "~/.claude/statuslines/claudex5-subagent-models.py",
+}
+value = settings.get("subagentStatusLine")
+if value == expected:
+    print("active")
+elif value is None:
+    print("missing")
+else:
+    print("foreign")
+PY
+)"
+  case "$subagent_status_state" in
+    active) pass "Claudex5 subagent model labels are active" ;;
+    missing)
+      if [[ "$strict" -eq 1 ]]; then
+        fail "Claudex5 subagent model labels are missing; rerun ./install.sh"
+      else
+        warn "Claudex5 subagent model labels are missing; rerun ./install.sh"
+      fi
+      ;;
+    foreign)
+      if [[ "$strict" -eq 1 ]]; then
+        fail "foreign subagentStatusLine is preserved; Claudex5 model labels are not active"
+      else
+        warn "foreign subagentStatusLine is preserved; Claudex5 model labels are not active"
+      fi
+      ;;
+  esac
+fi
 
 spark_link="$target_home/.codex/agents/harness-spark-ui-iteration.toml"
 spark_target="$repo_root/codex/agents/harness-spark-ui-iteration.toml"

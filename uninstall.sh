@@ -29,11 +29,12 @@ backup_dir="$(claudex5_backup_configs "$target_home")"
 for path in \
   "$target_home/.claude/agents"/harness-*.md \
   "$target_home/.claude/skills/claudex5-subagent-routing/SKILL.md" \
+  "$target_home/.claude/statuslines/claudex5-subagent-models.py" \
   "$target_home/.codex/agents"/harness-*.toml; do
   [[ -L "$path" ]] || continue
   target="$(readlink "$path")"
   case "$target" in
-    "$repo_root"/claude/agents/*|"$repo_root"/claude/skills/*|"$repo_root"/codex/agents/*) rm -f "$path" ;;
+    "$repo_root"/claude/agents/*|"$repo_root"/claude/skills/*|"$repo_root"/claude/statuslines/*|"$repo_root"/codex/agents/*) rm -f "$path" ;;
     *) claudex5_warn "foreign harness-named link preserved: $path" ;;
   esac
 done

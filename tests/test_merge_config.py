@@ -15,6 +15,7 @@ from scripts.merge_config import (
     START_MARKER,
     merge_claude_settings,
     merge_codex_config,
+    remove_harness_config,
     replace_managed_block,
 )
 
@@ -43,6 +44,7 @@ class ClaudeSettingsTests(unittest.TestCase):
                     {
                         "model": "existing-model",
                         "hooks": {"Stop": [{"command": "keep-me"}]},
+                        "statusLine": {"type": "command", "command": "keep-status"},
                         "enabledPlugins": {"existing@plugin": True},
                     }
                 ),
@@ -54,6 +56,16 @@ class ClaudeSettingsTests(unittest.TestCase):
 
             self.assertEqual(merged["model"], "existing-model")
             self.assertEqual(merged["hooks"]["Stop"], [{"command": "keep-me"}])
+            self.assertEqual(
+                merged["statusLine"], {"type": "command", "command": "keep-status"}
+            )
+            self.assertEqual(
+                merged["subagentStatusLine"],
+                {
+                    "type": "command",
+                    "command": "~/.claude/statuslines/claudex5-subagent-models.py",
+                },
+            )
             self.assertTrue(merged["enabledPlugins"]["existing@plugin"])
             self.assertTrue(merged["enabledPlugins"]["codex@openai-codex"])
             self.assertEqual(
@@ -71,6 +83,58 @@ class ClaudeSettingsTests(unittest.TestCase):
                 merge_claude_settings(path, enable_plugin=True)
 
             self.assertEqual(path.read_bytes(), before)
+
+    def test_foreign_subagent_status_line_is_preserved_with_warning(self):
+        foreign_values = (
+            {"type": "command", "command": "~/.claude/my-status.py"},
+            None,
+            "custom-renderer",
+        )
+        for foreign in foreign_values:
+            with self.subTest(foreign=foreign), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "settings.json"
+                path.write_text(
+                    json.dumps({"subagentStatusLine": foreign}), encoding="utf-8"
+                )
+
+                warnings = merge_claude_settings(path, enable_plugin=True)
+                merged = json.loads(path.read_text(encoding="utf-8"))
+
+                self.assertEqual(merged["subagentStatusLine"], foreign)
+                self.assertTrue(
+                    any("foreign subagentStatusLine" in item for item in warnings)
+                )
+
+    def test_uninstall_removes_only_owned_subagent_status_line(self):
+        owned = {
+            "type": "command",
+            "command": "~/.claude/statuslines/claudex5-subagent-models.py",
+        }
+        foreign = {"type": "command", "command": "~/.claude/my-status.py"}
+        for initial, should_remain in ((owned, False), (foreign, True)):
+            with self.subTest(initial=initial), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory)
+                (home / ".claude").mkdir()
+                settings = home / ".claude/settings.json"
+                settings.write_text(
+                    json.dumps(
+                        {
+                            "statusLine": {"type": "command", "command": "keep-status"},
+                            "subagentStatusLine": initial,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                remove_harness_config(home)
+                result = json.loads(settings.read_text(encoding="utf-8"))
+
+                self.assertEqual(
+                    result["statusLine"], {"type": "command", "command": "keep-status"}
+                )
+                self.assertEqual("subagentStatusLine" in result, should_remain)
+                if should_remain:
+                    self.assertEqual(result["subagentStatusLine"], foreign)
 
 
 class CodexConfigTests(unittest.TestCase):

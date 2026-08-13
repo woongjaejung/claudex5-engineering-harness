@@ -11,7 +11,7 @@ mkdir -p "$test_home/.claude" "$test_home/.codex"
 
 printf '%s\n' "existing Claude instructions" > "$test_home/.claude/CLAUDE.md"
 printf '%s\n' "existing Codex instructions" > "$test_home/.codex/AGENTS.md"
-printf '%s\n' '{"model":"keep-model","hooks":{"Stop":[{"command":"keep-hook"}]},"skipDangerousModePermissionPrompt":true}' > "$test_home/.claude/settings.json"
+printf '%s\n' '{"model":"keep-model","hooks":{"Stop":[{"command":"keep-hook"}]},"statusLine":{"type":"command","command":"keep-status"},"skipDangerousModePermissionPrompt":true}' > "$test_home/.claude/settings.json"
 cat > "$test_home/.codex/config.toml" <<'EOF'
 personality = "keep-personality"
 
@@ -34,10 +34,12 @@ run_install
 
 [[ -L "$test_home/.claude/agents/harness-orchestrator.md" ]]
 [[ -L "$test_home/.claude/skills/claudex5-subagent-routing/SKILL.md" ]]
+[[ -L "$test_home/.claude/statuslines/claudex5-subagent-models.py" ]]
 [[ -L "$test_home/.codex/agents/harness-sol-research.toml" ]]
 [[ ! -e "$test_home/.codex/agents/harness-spark-ui-iteration.toml" ]]
 [[ "$(readlink "$test_home/.claude/agents/harness-orchestrator.md")" == "$repo_root/claude/agents/harness-orchestrator.md" ]]
 [[ "$(readlink "$test_home/.claude/skills/claudex5-subagent-routing/SKILL.md")" == "$repo_root/claude/skills/claudex5-subagent-routing/SKILL.md" ]]
+[[ "$(readlink "$test_home/.claude/statuslines/claudex5-subagent-models.py")" == "$repo_root/claude/statuslines/claudex5-subagent-models.py" ]]
 grep -q "existing Claude instructions" "$test_home/.claude/CLAUDE.md"
 grep -q "existing Codex instructions" "$test_home/.codex/AGENTS.md"
 [[ "$(grep -c 'BEGIN CLAUDEX5' "$test_home/.claude/CLAUDE.md")" -eq 1 ]]
@@ -52,6 +54,11 @@ home = Path(sys.argv[1])
 settings = json.loads((home / ".claude/settings.json").read_text())
 assert settings["model"] == "keep-model"
 assert settings["hooks"]["Stop"][0]["command"] == "keep-hook"
+assert settings["statusLine"] == {"type": "command", "command": "keep-status"}
+assert settings["subagentStatusLine"] == {
+    "type": "command",
+    "command": "~/.claude/statuslines/claudex5-subagent-models.py",
+}
 assert settings["skipDangerousModePermissionPrompt"] is True
 assert settings["enabledPlugins"]["codex@openai-codex"] is True
 
@@ -71,11 +78,21 @@ run_install
 CLAUDEX5_PYTHON="$python_bin" "$repo_root/uninstall.sh" --home "$test_home"
 [[ ! -e "$test_home/.claude/agents/harness-orchestrator.md" ]]
 [[ ! -e "$test_home/.claude/skills/claudex5-subagent-routing/SKILL.md" ]]
+[[ ! -e "$test_home/.claude/statuslines/claudex5-subagent-models.py" ]]
 [[ ! -e "$test_home/.codex/agents/harness-sol-research.toml" ]]
 ! grep -q 'BEGIN CLAUDEX5' "$test_home/.claude/CLAUDE.md"
 ! grep -q '\[agents.harness_sol_review\]' "$test_home/.codex/config.toml"
 grep -q "existing Claude instructions" "$test_home/.claude/CLAUDE.md"
 grep -q 'personality = "keep-personality"' "$test_home/.codex/config.toml"
+"$python_bin" - "$test_home" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+settings = json.loads((Path(sys.argv[1]) / ".claude/settings.json").read_text())
+assert settings["statusLine"] == {"type": "command", "command": "keep-status"}
+assert "subagentStatusLine" not in settings
+PY
 
 collision_home="$test_root/collision-home"
 mkdir -p "$collision_home/.claude/agents" "$collision_home/.codex"
@@ -96,6 +113,44 @@ if CLAUDEX5_PYTHON="$python_bin" CLAUDEX5_SKIP_PLUGIN=1 \
   exit 1
 fi
 grep -q "user-owned skill" "$skill_collision_home/.claude/skills/claudex5-subagent-routing/SKILL.md"
+
+statusline_collision_home="$test_root/statusline-collision-home"
+mkdir -p "$statusline_collision_home/.claude/statuslines"
+printf '%s\n' "user-owned status line" > "$statusline_collision_home/.claude/statuslines/claudex5-subagent-models.py"
+if CLAUDEX5_PYTHON="$python_bin" CLAUDEX5_SKIP_PLUGIN=1 \
+  "$repo_root/install.sh" --home "$statusline_collision_home" --skip-runtime-check >/dev/null 2>&1; then
+  printf '%s\n' "installer unexpectedly overwrote a status-line collision" >&2
+  exit 1
+fi
+grep -q "user-owned status line" "$statusline_collision_home/.claude/statuslines/claudex5-subagent-models.py"
+
+foreign_status_home="$test_root/foreign-status-home"
+mkdir -p "$foreign_status_home/.claude" "$foreign_status_home/.codex"
+printf '%s\n' '{"subagentStatusLine":{"type":"command","command":"~/.claude/my-status.py"}}' > "$foreign_status_home/.claude/settings.json"
+printf '%s\n' '' > "$foreign_status_home/.codex/config.toml"
+foreign_status_log="$test_root/foreign-status.log"
+CLAUDEX5_PYTHON="$python_bin" CLAUDEX5_SKIP_PLUGIN=1 \
+  "$repo_root/install.sh" --home "$foreign_status_home" --skip-runtime-check \
+  >"$foreign_status_log" 2>&1
+grep -q 'foreign subagentStatusLine is preserved' "$foreign_status_log"
+"$python_bin" - "$foreign_status_home" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+settings = json.loads((Path(sys.argv[1]) / ".claude/settings.json").read_text())
+assert settings["subagentStatusLine"] == {
+    "type": "command",
+    "command": "~/.claude/my-status.py",
+}
+PY
+if CLAUDEX5_PYTHON="$python_bin" \
+  "$repo_root/verify.sh" --home "$foreign_status_home" --strict --structural-only \
+  >"$foreign_status_log" 2>&1; then
+  printf '%s\n' "strict structural verification must reject a foreign subagentStatusLine" >&2
+  exit 1
+fi
+grep -q 'FAIL: foreign subagentStatusLine is preserved' "$foreign_status_log"
 
 root_alias="$test_root/root-alias"
 ln -s / "$root_alias"
@@ -129,6 +184,7 @@ fi
 [[ "$(cat "$rollback_home/.codex/AGENTS.md")" == "before Codex rollback" ]]
 [[ ! -e "$rollback_home/.claude/agents/harness-orchestrator.md" ]]
 [[ ! -e "$rollback_home/.claude/skills/claudex5-subagent-routing/SKILL.md" ]]
+[[ ! -e "$rollback_home/.claude/statuslines/claudex5-subagent-models.py" ]]
 
 fake_bin="$test_root/fake-bin"
 spark_home="$test_root/spark-home"

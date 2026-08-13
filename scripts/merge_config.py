@@ -16,6 +16,10 @@ from pathlib import Path
 
 START_MARKER = "<!-- BEGIN CLAUDEX5 ENGINEERING HARNESS -->"
 END_MARKER = "<!-- END CLAUDEX5 ENGINEERING HARNESS -->"
+CLAUDEX5_SUBAGENT_STATUS_LINE = {
+    "type": "command",
+    "command": "~/.claude/statuslines/claudex5-subagent-models.py",
+}
 
 BASE_CODEX_AGENT_FILES = {
     "harness_sol_research": "harness-sol-research.toml",
@@ -116,6 +120,12 @@ def merge_claude_settings(path: Path, enable_plugin: bool, harden: bool = False)
         raise ValueError("Claude settings root must be a JSON object")
 
     warnings: list[str] = []
+    if "subagentStatusLine" not in settings:
+        settings["subagentStatusLine"] = dict(CLAUDEX5_SUBAGENT_STATUS_LINE)
+    elif settings["subagentStatusLine"] != CLAUDEX5_SUBAGENT_STATUS_LINE:
+        warnings.append(
+            "foreign subagentStatusLine is preserved; Claudex5 model labels are not active"
+        )
     if settings.get("skipDangerousModePermissionPrompt") is True:
         if harden:
             settings["skipDangerousModePermissionPrompt"] = False
@@ -272,6 +282,18 @@ def remove_harness_config(home: Path) -> None:
             atomic_write(
                 path,
                 remove_managed_block(path.read_text(encoding="utf-8"), START_MARKER, END_MARKER),
+            )
+
+    settings_path = home / ".claude" / "settings.json"
+    if settings_path.exists():
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        if not isinstance(settings, dict):
+            raise ValueError("Claude settings root must be a JSON object")
+        if settings.get("subagentStatusLine") == CLAUDEX5_SUBAGENT_STATUS_LINE:
+            del settings["subagentStatusLine"]
+            atomic_write(
+                settings_path,
+                json.dumps(settings, indent=2, ensure_ascii=False) + "\n",
             )
 
     config_path = home / ".codex" / "config.toml"
