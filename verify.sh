@@ -161,6 +161,7 @@ expected_links=(
   "$target_home/.claude/agents/harness-architecture-reviewer.md:$repo_root/claude/agents/harness-architecture-reviewer.md"
   "$target_home/.claude/agents/harness-judge.md:$repo_root/claude/agents/harness-judge.md"
   "$target_home/.codex/agents/harness-sol-research.toml:$repo_root/codex/agents/harness-sol-research.toml"
+  "$target_home/.codex/agents/harness-sol-plan-review.toml:$repo_root/codex/agents/harness-sol-plan-review.toml"
   "$target_home/.codex/agents/harness-luna-implementation.toml:$repo_root/codex/agents/harness-luna-implementation.toml"
   "$target_home/.codex/agents/harness-sol-review.toml:$repo_root/codex/agents/harness-sol-review.toml"
   "$target_home/.codex/agents/harness-sol-adversarial-review.toml:$repo_root/codex/agents/harness-sol-adversarial-review.toml"

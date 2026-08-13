@@ -376,6 +376,7 @@ class TemplateTests(unittest.TestCase):
     def test_codex_roles_match_model_and_effort_matrix(self):
         expected = {
             "harness-sol-research.toml": ("gpt-5.6-sol", "high"),
+            "harness-sol-plan-review.toml": ("gpt-5.6-sol", "high"),
             "harness-luna-implementation.toml": ("gpt-5.6-luna", "max"),
             "harness-sol-review.toml": ("gpt-5.6-sol", "high"),
             "harness-sol-adversarial-review.toml": ("gpt-5.6-sol", "high"),
@@ -395,6 +396,24 @@ class TemplateTests(unittest.TestCase):
             else:
                 self.assertEqual(actual[filename]["model_reasoning_effort"], effort)
             self.assertTrue(actual[filename]["developer_instructions"].strip())
+
+        plan_review = actual["harness-sol-plan-review.toml"]["developer_instructions"]
+        for required in (
+            "fresh context",
+            "without editing files",
+            "APPROVE",
+            "NEEDS CHANGES",
+            "requirements",
+            "assumptions",
+            "dependency",
+            "test-first",
+            "security",
+            "migration",
+            "rollback",
+            "recovery",
+            "simpler",
+        ):
+            self.assertIn(required, plan_review)
 
     def test_root_readme_is_english_only(self):
         readme = (self.repository / "README.md").read_text(encoding="utf-8")

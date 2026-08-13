@@ -36,6 +36,7 @@ run_install
 [[ -L "$test_home/.claude/skills/claudex5-subagent-routing/SKILL.md" ]]
 [[ -L "$test_home/.claude/statuslines/claudex5-subagent-models.py" ]]
 [[ -L "$test_home/.codex/agents/harness-sol-research.toml" ]]
+[[ -L "$test_home/.codex/agents/harness-sol-plan-review.toml" ]]
 [[ ! -e "$test_home/.codex/agents/harness-spark-ui-iteration.toml" ]]
 [[ "$(readlink "$test_home/.claude/agents/harness-orchestrator.md")" == "$repo_root/claude/agents/harness-orchestrator.md" ]]
 [[ "$(readlink "$test_home/.claude/skills/claudex5-subagent-routing/SKILL.md")" == "$repo_root/claude/skills/claudex5-subagent-routing/SKILL.md" ]]
@@ -44,6 +45,7 @@ grep -q "existing Claude instructions" "$test_home/.claude/CLAUDE.md"
 grep -q "existing Codex instructions" "$test_home/.codex/AGENTS.md"
 [[ "$(grep -c 'BEGIN CLAUDEX5' "$test_home/.claude/CLAUDE.md")" -eq 1 ]]
 [[ "$(grep -c '\[agents.harness_sol_review\]' "$test_home/.codex/config.toml")" -eq 1 ]]
+[[ "$(grep -c '\[agents.harness_sol_plan_review\]' "$test_home/.codex/config.toml")" -eq 1 ]]
 
 "$python_bin" - "$test_home" <<'PY'
 import json
@@ -67,12 +69,14 @@ assert 'personality = "keep-personality"' in config
 assert '[projects."/"]' in config
 assert '[mcp_servers.keep]' in config
 assert config.count("multi_agent = true") == 1
+assert config.count("[agents.harness_sol_plan_review]") == 1
 PY
 
 run_install
 [[ -L "$test_home/.claude/skills/claudex5-subagent-routing/SKILL.md" ]]
 [[ "$(grep -c 'BEGIN CLAUDEX5' "$test_home/.claude/CLAUDE.md")" -eq 1 ]]
 [[ "$(grep -c '\[agents.harness_sol_review\]' "$test_home/.codex/config.toml")" -eq 1 ]]
+[[ "$(grep -c '\[agents.harness_sol_plan_review\]' "$test_home/.codex/config.toml")" -eq 1 ]]
 [[ "$(find "$test_home/.local/state/claudex5-engineering-harness/backups" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" -ge 1 ]]
 
 CLAUDEX5_PYTHON="$python_bin" "$repo_root/uninstall.sh" --home "$test_home"
@@ -80,8 +84,10 @@ CLAUDEX5_PYTHON="$python_bin" "$repo_root/uninstall.sh" --home "$test_home"
 [[ ! -e "$test_home/.claude/skills/claudex5-subagent-routing/SKILL.md" ]]
 [[ ! -e "$test_home/.claude/statuslines/claudex5-subagent-models.py" ]]
 [[ ! -e "$test_home/.codex/agents/harness-sol-research.toml" ]]
+[[ ! -e "$test_home/.codex/agents/harness-sol-plan-review.toml" ]]
 ! grep -q 'BEGIN CLAUDEX5' "$test_home/.claude/CLAUDE.md"
 ! grep -q '\[agents.harness_sol_review\]' "$test_home/.codex/config.toml"
+! grep -q '\[agents.harness_sol_plan_review\]' "$test_home/.codex/config.toml"
 grep -q "existing Claude instructions" "$test_home/.claude/CLAUDE.md"
 grep -q 'personality = "keep-personality"' "$test_home/.codex/config.toml"
 "$python_bin" - "$test_home" <<'PY'
@@ -185,6 +191,7 @@ fi
 [[ ! -e "$rollback_home/.claude/agents/harness-orchestrator.md" ]]
 [[ ! -e "$rollback_home/.claude/skills/claudex5-subagent-routing/SKILL.md" ]]
 [[ ! -e "$rollback_home/.claude/statuslines/claudex5-subagent-models.py" ]]
+[[ ! -e "$rollback_home/.codex/agents/harness-sol-plan-review.toml" ]]
 
 fake_bin="$test_root/fake-bin"
 spark_home="$test_root/spark-home"

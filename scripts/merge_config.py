@@ -23,6 +23,7 @@ CLAUDEX5_SUBAGENT_STATUS_LINE = {
 
 BASE_CODEX_AGENT_FILES = {
     "harness_sol_research": "harness-sol-research.toml",
+    "harness_sol_plan_review": "harness-sol-plan-review.toml",
     "harness_luna_implementation": "harness-luna-implementation.toml",
     "harness_sol_review": "harness-sol-review.toml",
     "harness_sol_adversarial_review": "harness-sol-adversarial-review.toml",
@@ -34,6 +35,7 @@ ALL_CODEX_AGENT_FILES = {**BASE_CODEX_AGENT_FILES, **SPARK_AGENT_FILES}
 
 CODEX_AGENT_DESCRIPTIONS = {
     "harness_sol_research": "Independent difficult-problem research in a fresh context.",
+    "harness_sol_plan_review": "Fresh, read-only review of a complex or high-risk implementation plan.",
     "harness_luna_implementation": "Bounded alternative implementation with explicit acceptance criteria.",
     "harness_sol_review": "Independent normal code review in a fresh context.",
     "harness_sol_adversarial_review": "Adversarial review of assumptions, edge cases, and failure modes.",
