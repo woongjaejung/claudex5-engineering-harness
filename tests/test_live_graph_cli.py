@@ -322,6 +322,26 @@ class LiveGraphCliTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(serve.call_args.args[1], live_graph_cli.SessionSelection.one("fixed-session"))
 
+    def test_web_select_quit_or_eof_does_not_start_an_all_session_server(self) -> None:
+        class Store:
+            def snapshots(self):
+                return [{
+                    "session_id": "session-1", "cwd": "/work", "title": "One",
+                    "status": "running", "updated_at": "2026-08-14T12:00:00Z",
+                }]
+
+        for entered in ("Q\n", ""):
+            with self.subTest(entered=repr(entered)):
+                input_stream = unittest.mock.Mock(wraps=io.StringIO(entered))
+                input_stream.isatty.return_value = True
+                with unittest.mock.patch.object(live_graph_cli, "StateStore", return_value=Store()), \
+                     unittest.mock.patch.object(live_graph_cli.sys, "stdin", input_stream), \
+                     unittest.mock.patch.object(live_graph_cli.sys, "stdout", new=io.StringIO()), \
+                     unittest.mock.patch("scripts.live_graph.web.serve_dashboard") as serve:
+                    result = live_graph_cli.main(["dashboard", "--web", "--select", "--no-open"])
+                self.assertEqual(result, 0)
+                serve.assert_not_called()
+
     def test_interactive_selector_accepts_default_numeric_all_invalid_eof_and_quit(self) -> None:
         rows = [
             {"session_id": "session-1", "cwd": "/work/one", "title": "One", "status": "running", "updated_at": "2026-08-14T12:00:00Z"},

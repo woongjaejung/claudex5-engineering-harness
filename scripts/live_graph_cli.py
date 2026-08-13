@@ -431,11 +431,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.command == "dashboard":
             selection = _resolve_dashboard_selection(store, arguments)
             if arguments.web:
+                if selection is None:
+                    return 0
                 from scripts.live_graph.web import serve_dashboard
 
-                return serve_dashboard(
-                    store, selection or SessionSelection.all(), arguments.host, arguments.port, not arguments.no_open
-                )
+                return serve_dashboard(store, selection, arguments.host, arguments.port, not arguments.no_open)
             if selection is None:
                 rendered = render_snapshot(
                     None,

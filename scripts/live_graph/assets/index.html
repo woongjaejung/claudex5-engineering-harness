@@ -9,20 +9,36 @@
   <script type="module" src="/app.mjs"></script>
 </head>
 <body>
+  <div class="scanlines" aria-hidden="true"></div>
   <header class="masthead">
-    <div><p class="eyebrow">CLAUDEX5 / LIVE ORCHESTRATION</p><h1>Flight graph</h1></div>
-    <div class="connection" id="connection" data-state="connecting" role="status" aria-live="polite"><span id="connection-text">CONNECTING</span></div>
+    <div class="identity">
+      <span class="signal-mark" aria-hidden="true"></span>
+      <div><p class="eyebrow">CLAUDEX5 / LIVE ORCHESTRATION</p><h1>Flight graph</h1></div>
+    </div>
+    <div class="connection" id="connection" data-state="connecting" role="status" aria-live="polite">
+      <span class="connection-light" aria-hidden="true"></span><span id="connection-text">CONNECTING</span>
+    </div>
   </header>
   <main>
     <section class="run-strip" aria-label="Current run summary">
       <div><span>RUN</span><strong id="run-id">Awaiting telemetry</strong></div>
       <div><span>PROJECT</span><strong id="project">—</strong></div>
       <div><span>STATE</span><strong id="run-state">—</strong></div>
-      <div><span>PROGRESS</span><strong id="progress-text">0 / 0</strong><div class="progress-track" aria-hidden="true"><i id="progress-bar"></i></div></div>
+      <div class="progress-cell"><span>PROGRESS</span><strong id="progress-text">0 / 0</strong><div class="progress-track" aria-hidden="true"><i id="progress-bar"></i></div></div>
     </section>
     <section class="workspace">
-      <div class="graph-panel"><div class="panel-heading"><div><p class="eyebrow">NODE / EDGE TELEMETRY</p><h2>Active execution map</h2></div><p id="updated-at">No events received</p></div><div class="empty-state" id="empty-state"><p>Waiting for a Claudex5 run</p></div><svg id="graph" role="img" aria-label="Claudex5 task and agent dependency graph"></svg></div>
-      <aside><section class="side-card"><p class="eyebrow">QUEUE</p><h2>Next runnable</h2><ol id="next-runnable"><li>Waiting for graph data</li></ol></section></aside>
+      <div class="graph-panel">
+        <div class="panel-heading"><div><p class="eyebrow">NODE / EDGE TELEMETRY</p><h2>Active execution map</h2></div><p id="updated-at">No events received</p></div>
+        <div class="empty-state" id="empty-state"><div class="radar" aria-hidden="true"><i></i></div><p>Waiting for a Claudex5 run</p><small>Start a Claude Code session, then keep this page open.</small></div>
+        <svg id="graph" role="img" aria-label="Claudex5 task and agent dependency graph"></svg>
+      </div>
+      <aside>
+        <section class="side-card"><p class="eyebrow">STATE INDEX</p><h2>Signal legend</h2><ul class="legend" aria-label="Node state colors">
+          <li><i class="state-running"></i>Running</li><li><i class="state-waiting"></i>Waiting</li><li><i class="state-passed"></i>Passed</li><li><i class="state-failed"></i>Failed</li><li><i class="state-blocked"></i>Blocked</li><li><i class="state-skipped"></i>Skipped</li><li><i class="state-interrupted"></i>Interrupted</li>
+        </ul></section>
+        <section class="side-card next-card"><p class="eyebrow">QUEUE</p><h2>Next runnable</h2><ol id="next-runnable"><li>Waiting for graph data</li></ol></section>
+        <section class="side-card privacy-card"><p class="eyebrow">LOCAL LINK</p><h2>Private by design</h2><p>Loopback only. Labels and lifecycle metadata are rendered; prompts, code, and credentials stay out.</p></section>
+      </aside>
     </section>
   </main>
   <footer><span>SINGLE EVENT STREAM</span><span>ZERO EXTERNAL ASSETS</span><span id="degraded">EVENT LOG HEALTHY</span></footer>

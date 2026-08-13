@@ -7,7 +7,9 @@ import ipaddress
 import json
 from pathlib import Path
 import socket
+import sys
 import time
+import threading
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit
 import webbrowser
@@ -24,6 +26,7 @@ ASSET_DIRECTORY = Path(__file__).with_name("assets")
 INVALID_SELECTION = b"Invalid selection.\n"
 MISSING_SELECTION = b"Selected session unavailable.\n"
 STATE_UNAVAILABLE = b"Dashboard state unavailable.\n"
+RECOVERABLE_STATE_READ_ERRORS = (OSError, TimeoutError, ValueError, TypeError, UnicodeError)
 
 
 def _is_loopback(host: str) -> bool:
@@ -134,13 +137,12 @@ def make_handler(store: Any, selection: SessionSelection, stream_interval: float
                 self._write_event("snapshot", encoded)
                 degraded = False
                 keepalive_at = time.monotonic() + keepalive_interval
-                while True:
-                    time.sleep(stream_interval)
+                while not self.server.stop_event.wait(stream_interval):
                     try:
                         current = self._bundle(requested)
                         current_encoded = self._bundle_bytes(current)
                         current_revision = str(current["revision"])
-                    except (OSError, TimeoutError, ValueError):
+                    except RECOVERABLE_STATE_READ_ERRORS:
                         if not degraded:
                             self._write_event("degraded", b'{"status":"degraded"}')
                             degraded = True
@@ -206,6 +208,20 @@ class _DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.stop_event = threading.Event()
+        super().__init__(*args, **kwargs)
+
+    def shutdown(self) -> None:
+        self.stop_event.set()
+        super().shutdown()
+
+    def server_close(self) -> None:
+        self.stop_event.set()
+        super().server_close()
+
+    def handle_error(self, _request: object, _client_address: object) -> None:
+        sys.stderr.write("Dashboard request failed.\n")
 
 class _IPv6DashboardServer(_DashboardServer):
     address_family = socket.AF_INET6

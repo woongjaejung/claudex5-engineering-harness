@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import io
 import json
+import sys
 import threading
+import time
 import unittest
+import unittest.mock
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -210,6 +214,67 @@ class WebDashboardTests(unittest.TestCase):
                 self.assertFalse(error.headers.get("Content-Type", "").startswith("text/event-stream"))
             finally:
                 error.close()
+
+    def test_sse_recovers_from_consecutive_corruption_without_private_traceback(self) -> None:
+        store = FlakyMemoryStore(dict(SAMPLE_SNAPSHOT, session_id="selected-session"))
+        stderr = io.StringIO()
+        with unittest.mock.patch.object(sys, "stderr", stderr), running_server(
+            store, SessionSelection.one("selected-session"), stream_interval=0.01, keepalive_interval=1,
+        ) as base_url:
+            response = urlopen(base_url + "/api/events?session=selected-session", timeout=2)
+            try:
+                read_sse_frame(response)
+                store.failures.extend([
+                    TypeError("corrupt state at /private/run.json"),
+                    UnicodeError("invalid bytes at /private/run.json"),
+                ])
+                self.assertEqual(read_sse_frame(response), "event: degraded\ndata: {\"status\":\"degraded\"}\n")
+                store.snapshot = dict(store.snapshot, sequence=4)
+                recovered = read_sse_frame(response)
+                self.assertTrue(recovered.startswith("event: snapshot\n"))
+            finally:
+                response.close()
+
+        self.assertNotIn("/private/run.json", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_unexpected_sse_error_uses_only_a_fixed_server_diagnostic(self) -> None:
+        store = FlakyMemoryStore(dict(SAMPLE_SNAPSHOT, session_id="selected-session"))
+        stderr = io.StringIO()
+        with unittest.mock.patch.object(sys, "stderr", stderr), running_server(
+            store, SessionSelection.one("selected-session"), stream_interval=0.01, keepalive_interval=1,
+        ) as base_url:
+            response = urlopen(base_url + "/api/events?session=selected-session", timeout=2)
+            try:
+                read_sse_frame(response)
+                store.failures.append(RuntimeError("unexpected failure /private/request-state"))
+                time.sleep(0.05)
+            finally:
+                response.close()
+
+        self.assertEqual(stderr.getvalue(), "Dashboard request failed.\n")
+
+    def test_sse_worker_stops_without_more_reads_when_server_shuts_down(self) -> None:
+        store = MemoryStore(dict(SAMPLE_SNAPSHOT, session_id="selected-session"))
+        server = create_server(
+            store, SessionSelection.one("selected-session"), host="127.0.0.1", port=0,
+            stream_interval=1, keepalive_interval=10,
+        )
+        serving = threading.Thread(target=server.serve_forever, daemon=True)
+        serving.start()
+        host, port = server.server_address[:2]
+        response = urlopen(f"http://{host}:{port}/api/events?session=selected-session", timeout=2)
+        try:
+            read_sse_frame(response)
+            before_shutdown = store.snapshots_calls
+            server.shutdown()
+            server.server_close()
+            serving.join(timeout=0.5)
+            self.assertFalse(serving.is_alive())
+            time.sleep(0.05)
+            self.assertEqual(store.snapshots_calls, before_shutdown)
+        finally:
+            response.close()
 
     def test_unknown_routes_return_plain_404_without_reflecting_the_path(self) -> None:
         with running_server(MemoryStore()) as base_url:
