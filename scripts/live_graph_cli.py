@@ -12,7 +12,7 @@ import signal
 import subprocess
 import sys
 import time
-from typing import Sequence
+from typing import Mapping, Sequence, TextIO
 from uuid import uuid4
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
@@ -20,8 +20,9 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from scripts.live_graph.model import ROLE_METADATA, sanitize_label
+from scripts.live_graph.sessions import SessionSelection, build_bundle, catalog, group_snapshots
 from scripts.live_graph.store import StateStore
-from scripts.live_graph.terminal import render_snapshot
+from scripts.live_graph.terminal import render_all_sessions, render_session_catalog, render_snapshot
 
 
 CODEX_ROLES = {
@@ -40,7 +41,10 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     dashboard = subparsers.add_parser("dashboard", help="show the active graph")
-    dashboard.add_argument("--session-id")
+    target = dashboard.add_mutually_exclusive_group()
+    target.add_argument("--session-id")
+    target.add_argument("--all", action="store_true")
+    target.add_argument("--select", action="store_true")
     dashboard.add_argument("--once", action="store_true")
     dashboard.add_argument("--web", action="store_true")
     dashboard.add_argument("--host", default="127.0.0.1")
@@ -51,6 +55,9 @@ def _parser() -> argparse.ArgumentParser:
     status = subparsers.add_parser("status", help="print snapshot status")
     status.add_argument("--session-id")
     status.add_argument("--json", action="store_true")
+
+    sessions = subparsers.add_parser("sessions", help="list retained sessions")
+    sessions.add_argument("--all", action="store_true")
 
     event = subparsers.add_parser("event", help="record an allowlisted lifecycle event")
     event.add_argument("--session-id")
@@ -95,6 +102,117 @@ def _parser() -> argparse.ArgumentParser:
 
 def _snapshot(store: StateStore, session_id: str | None) -> dict | None:
     return store.load(session_id) if session_id else store.latest()
+
+
+def _canonical_cwd(value: Path | str) -> str:
+    return str(Path(value).expanduser().resolve(strict=False))
+
+
+def _select_session(
+    rows: list[Mapping[str, object]], input_stream: TextIO, output_stream: TextIO
+) -> SessionSelection | None:
+    """Prompt once per attempt; selection data remains restricted to catalog fields."""
+    if not rows:
+        output_stream.write("No retained Claudex5 sessions.\n")
+        return None
+    output_stream.write("Select a Claudex5 session:\n\n")
+    for index, row in enumerate(rows, start=1):
+        title = row.get("title") or row.get("session_id") or "unknown"
+        output_stream.write(f"  {index}  {title} · {row.get('status') or 'unknown'}\n")
+        output_stream.write(f"     {row.get('cwd') or 'unknown'}\n")
+    output_stream.write("\n  A  All sessions\n  Q  Quit\n\n")
+    while True:
+        output_stream.write("Choice [1]: ")
+        output_stream.flush()
+        choice = input_stream.readline()
+        if choice == "":
+            return None
+        choice = choice.strip()
+        if not choice:
+            return SessionSelection.one(str(rows[0]["session_id"]))
+        if choice.upper() == "A":
+            return SessionSelection.all()
+        if choice.upper() == "Q":
+            return None
+        try:
+            index = int(choice)
+        except ValueError:
+            index = 0
+        if 1 <= index <= len(rows):
+            return SessionSelection.one(str(rows[index - 1]["session_id"]))
+        output_stream.write("Invalid selection. Enter a number, A, or Q.\n")
+
+
+def _resolve_dashboard_selection(
+    store: StateStore,
+    arguments: argparse.Namespace,
+    *,
+    cwd: Path | str | None = None,
+    isatty: bool | None = None,
+    input_stream: TextIO | None = None,
+    output_stream: TextIO | None = None,
+) -> SessionSelection | None:
+    """Resolve exactly once, so later lifecycle events cannot change the viewed target."""
+    if arguments.session_id:
+        return SessionSelection.one(arguments.session_id)
+    if arguments.all:
+        return SessionSelection.all()
+    input_stream = input_stream or sys.stdin
+    output_stream = output_stream or sys.stdout
+    interactive = input_stream.isatty() if isatty is None else isatty
+    if arguments.once and not arguments.select:
+        interactive = False
+    snapshots = store.snapshots()
+    rows = catalog(snapshots)
+    if arguments.select:
+        if not interactive:
+            raise ValueError("--select requires an interactive terminal")
+        return _select_session(rows, input_stream, output_stream)
+    current_cwd = _canonical_cwd(cwd or Path.cwd())
+    candidates = [
+        row for row in rows
+        if row.get("cwd") and _canonical_cwd(str(row["cwd"])) == current_cwd
+    ]
+    running = [row for row in candidates if row.get("status") == "running"]
+    if len(running) == 1:
+        return SessionSelection.one(str(running[0]["session_id"]))
+    if not running and len(candidates) == 1:
+        return SessionSelection.one(str(candidates[0]["session_id"]))
+    if not rows:
+        return None
+    if not interactive:
+        raise ValueError("ambiguous dashboard selection; use --session-id or --all")
+    return _select_session(candidates or rows, input_stream, output_stream)
+
+
+def _selected_snapshot(bundle: Mapping[str, object]) -> Mapping[str, object] | None:
+    projects = bundle.get("projects", [])
+    if not isinstance(projects, list):
+        return None
+    for project in projects:
+        if not isinstance(project, Mapping):
+            continue
+        for key in ("running", "completed"):
+            snapshots = project.get(key, [])
+            if isinstance(snapshots, list) and snapshots:
+                snapshot = snapshots[0]
+                if isinstance(snapshot, Mapping):
+                    return snapshot
+    return None
+
+
+def _render_dashboard_bundle(
+    bundle: Mapping[str, object], selection: SessionSelection, columns: int, ascii_only: bool
+) -> str:
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    if selection.mode == "all":
+        return render_all_sessions(bundle, columns, now, unicode=not ascii_only)
+    return render_snapshot(
+        _selected_snapshot(bundle), columns=columns, color=sys.stdout.isatty(),
+        unicode=not ascii_only, now=now,
+    )
 
 
 def _session_id(store: StateStore, requested: str | None) -> str:
@@ -293,19 +411,57 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 print("no run" if snapshot is None else f"{snapshot['session_id']}: {snapshot['status']}")
             return 0
+        if arguments.command == "sessions":
+            snapshots = store.snapshots()
+            if arguments.all:
+                rows = catalog(snapshots)
+            else:
+                groups = group_snapshots(snapshots, completed_limit=1)
+                retained = [
+                    snapshot
+                    for group in groups
+                    for key in ("running", "completed")
+                    for snapshot in group[key]
+                ]
+                rows = catalog(retained)
+            from datetime import datetime, timezone
+
+            sys.stdout.write(render_session_catalog(rows, datetime.now(timezone.utc), unicode=not getattr(arguments, "ascii", False)))
+            return 0
         if arguments.command == "dashboard":
+            selection = _resolve_dashboard_selection(store, arguments)
             if arguments.web:
                 from scripts.live_graph.web import serve_dashboard
 
-                return serve_dashboard(store, arguments.session_id, arguments.host, arguments.port, not arguments.no_open)
-            previous = None
-            while True:
+                session_id = selection.session_id if selection and selection.mode == "session" else None
+                return serve_dashboard(store, session_id, arguments.host, arguments.port, not arguments.no_open)
+            if selection is None:
                 rendered = render_snapshot(
-                    _snapshot(store, arguments.session_id),
+                    None,
                     columns=shutil.get_terminal_size((120, 24)).columns,
                     color=sys.stdout.isatty(),
                     unicode=not arguments.ascii,
                 )
+                sys.stdout.write(rendered)
+                return 0
+            previous = None
+            last_valid_bundle: dict[str, object] | None = None
+            degraded = False
+            while True:
+                try:
+                    bundle = build_bundle(store, selection, completed_limit=1)
+                    last_valid_bundle = bundle
+                    degraded = False
+                except (OSError, TimeoutError, ValueError):
+                    if last_valid_bundle is None:
+                        raise
+                    bundle = last_valid_bundle
+                    degraded = True
+                rendered = _render_dashboard_bundle(
+                    bundle, selection, shutil.get_terminal_size((120, 24)).columns, arguments.ascii
+                )
+                if degraded:
+                    rendered = "STATE READ DEGRADED\n" + rendered
                 if arguments.once:
                     sys.stdout.write(rendered)
                     return 0
@@ -324,7 +480,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
     except KeyboardInterrupt:
         return 130
-    except (OSError, RuntimeError, TimeoutError, ValueError) as error:
+    except (LookupError, OSError, RuntimeError, TimeoutError, ValueError) as error:
         parser.error(str(error))
     return 2
 

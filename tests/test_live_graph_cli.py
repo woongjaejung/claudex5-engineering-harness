@@ -6,6 +6,7 @@ from pathlib import Path
 import signal
 import stat
 import subprocess
+import io
 import tempfile
 import time
 import unittest
@@ -287,6 +288,91 @@ class LiveGraphCliTests(unittest.TestCase):
         self.assertEqual(result, 9)
         self.assertEqual(store.calls, 2)
         self.assertTrue(stderr.write.called)
+
+    def test_dashboard_target_options_are_mutually_exclusive(self) -> None:
+        parser = live_graph_cli._parser()
+        for arguments in (
+            ["dashboard", "--session-id", "session-1", "--all"],
+            ["dashboard", "--session-id", "session-1", "--select"],
+            ["dashboard", "--all", "--select"],
+        ):
+            with self.subTest(arguments=arguments), self.assertRaises(SystemExit) as error:
+                parser.parse_args(arguments)
+            self.assertEqual(error.exception.code, 2)
+
+    def test_explicit_missing_dashboard_session_is_a_command_error(self) -> None:
+        result = self.run_cli("dashboard", "--session-id", "missing-session", "--once")
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("selected session is unavailable", result.stderr)
+
+    def test_interactive_selector_accepts_default_numeric_all_invalid_eof_and_quit(self) -> None:
+        rows = [
+            {"session_id": "session-1", "cwd": "/work/one", "title": "One", "status": "running", "updated_at": "2026-08-14T12:00:00Z"},
+            {"session_id": "session-2", "cwd": "/work/two", "title": "Two", "status": "passed", "updated_at": "2026-08-14T12:00:00Z"},
+        ]
+        for entered, expected in (("2\n", "session-2"), ("\n", "session-1"), ("A\n", "all"), ("bad\n1\n", "session-1"), ("Q\n", None), ("", None)):
+            with self.subTest(entered=entered):
+                output = io.StringIO()
+                selected = live_graph_cli._select_session(rows, io.StringIO(entered), output)
+                self.assertEqual(selected.mode if selected else None, "all" if expected == "all" else "session" if expected else None)
+                self.assertEqual(selected.session_id if selected else None, expected if expected not in {None, "all"} else None)
+                if entered.startswith("bad"):
+                    self.assertIn("Invalid selection", output.getvalue())
+
+    def test_resolver_uses_path_candidates_and_non_tty_is_unambiguous_only(self) -> None:
+        class Store:
+            def __init__(self, snapshots): self._snapshots = snapshots
+            def snapshots(self): return list(self._snapshots)
+        current = str(REPOSITORY.resolve())
+        running = {"session_id": "session-1", "cwd": current, "status": "running", "updated_at": "2026-08-14T12:00:00Z"}
+        other = {"session_id": "session-2", "cwd": "/other", "status": "running", "updated_at": "2026-08-14T12:00:00Z"}
+        arguments = live_graph_cli._parser().parse_args(["dashboard", "--once"])
+        selected = live_graph_cli._resolve_dashboard_selection(Store([running, other]), arguments, cwd=REPOSITORY, isatty=False)
+        self.assertEqual(selected.session_id, "session-1")
+        retained = dict(running, status="passed")
+        self.assertEqual(live_graph_cli._resolve_dashboard_selection(Store([retained]), arguments, cwd=REPOSITORY, isatty=False).session_id, "session-1")
+        with self.assertRaisesRegex(ValueError, "--session-id.*--all"):
+            live_graph_cli._resolve_dashboard_selection(Store([running, dict(running, session_id="session-3")]), arguments, cwd=REPOSITORY, isatty=False)
+        output = io.StringIO()
+        interactive_arguments = live_graph_cli._parser().parse_args(["dashboard"])
+        self.assertEqual(
+            live_graph_cli._resolve_dashboard_selection(Store([other]), interactive_arguments, cwd=REPOSITORY, isatty=True, input_stream=io.StringIO("1\n"), output_stream=output).session_id,
+            "session-2",
+        )
+
+    def test_once_does_not_prompt_without_explicit_select(self) -> None:
+        class Store:
+            def snapshots(self):
+                return [
+                    {"session_id": "session-1", "cwd": str(REPOSITORY), "status": "running", "updated_at": "2026-08-14T12:00:00Z"},
+                    {"session_id": "session-2", "cwd": str(REPOSITORY), "status": "running", "updated_at": "2026-08-14T12:00:00Z"},
+                ]
+        arguments = live_graph_cli._parser().parse_args(["dashboard", "--once"])
+
+        with self.assertRaisesRegex(ValueError, "--session-id.*--all"):
+            live_graph_cli._resolve_dashboard_selection(
+                Store(), arguments, cwd=REPOSITORY, isatty=True,
+                input_stream=io.StringIO("1\n"), output_stream=io.StringIO(),
+            )
+
+    def test_follow_mode_pins_selection_and_recovers_from_transient_read_failure(self) -> None:
+        selected = live_graph_cli.SessionSelection.one("session-1")
+        bundle = {"selection": {"mode": "session", "session_id": "session-1"}, "projects": [{"cwd": "/work", "running": [{"session_id": "session-1", "nodes": {}, "edges": {}}], "completed": []}]}
+        outputs = []
+        with unittest.mock.patch.object(live_graph_cli, "_resolve_dashboard_selection", return_value=selected) as resolve, \
+             unittest.mock.patch.object(live_graph_cli, "build_bundle", side_effect=[bundle, TimeoutError("state busy"), bundle]), \
+             unittest.mock.patch.object(live_graph_cli, "_render_dashboard_bundle", return_value="GRAPH\n"), \
+             unittest.mock.patch.object(live_graph_cli.sys, "stdout", new=io.StringIO()) as stdout, \
+             unittest.mock.patch.object(live_graph_cli.sys, "stdin") as stdin, \
+             unittest.mock.patch.object(live_graph_cli.time, "sleep", side_effect=[None, None, KeyboardInterrupt()]) as sleep:
+            stdin.isatty.return_value = True
+            result = live_graph_cli.main(["dashboard"])
+            outputs.append(stdout.getvalue())
+        self.assertEqual(result, 130)
+        self.assertEqual(resolve.call_count, 1)
+        self.assertEqual(sleep.call_count, 3)
+        self.assertIn("STATE READ DEGRADED", outputs[0])
 
 
 if __name__ == "__main__":
