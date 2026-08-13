@@ -35,6 +35,7 @@ sources=(
   "$repo_root/claude/agents/harness-architecture-reviewer.md"
   "$repo_root/claude/agents/harness-judge.md"
   "$repo_root/claude/agents/harness-judge-opus.md"
+  "$repo_root/claude/skills/claudex5-subagent-routing/SKILL.md"
   "$repo_root/codex/agents/harness-sol-research.toml"
   "$repo_root/codex/agents/harness-luna-implementation.toml"
   "$repo_root/codex/agents/harness-sol-review.toml"
@@ -49,6 +50,7 @@ destinations=(
   "$target_home/.claude/agents/harness-architecture-reviewer.md"
   "$target_home/.claude/agents/harness-judge.md"
   "$target_home/.claude/agents/harness-judge-opus.md"
+  "$target_home/.claude/skills/claudex5-subagent-routing/SKILL.md"
   "$target_home/.codex/agents/harness-sol-research.toml"
   "$target_home/.codex/agents/harness-luna-implementation.toml"
   "$target_home/.codex/agents/harness-sol-review.toml"
@@ -83,7 +85,10 @@ if [[ "$remove_managed_spark" -eq 1 ]]; then
   printf 'REMOVED\t%s\n' "$spark_destination"
 fi
 
-mkdir -p "$target_home/.claude/agents" "$target_home/.codex/agents"
+mkdir -p \
+  "$target_home/.claude/agents" \
+  "$target_home/.claude/skills/claudex5-subagent-routing" \
+  "$target_home/.codex/agents"
 for index in "${!sources[@]}"; do
   source_path="${sources[$index]}"
   destination="${destinations[$index]}"

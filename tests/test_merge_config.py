@@ -336,6 +336,52 @@ class TemplateTests(unittest.TestCase):
         readme = (self.repository / "README.md").read_text(encoding="utf-8")
         self.assertIsNone(re.search(r"[가-힣]", readme))
 
+    def test_superpowers_adapter_skill_contract(self):
+        skill_path = (
+            self.repository
+            / "claude"
+            / "skills"
+            / "claudex5-subagent-routing"
+            / "SKILL.md"
+        )
+        self.assertTrue(skill_path.is_file(), f"missing adapter skill: {skill_path}")
+
+        frontmatter = self._frontmatter(skill_path)
+        self.assertEqual(set(frontmatter), {"name", "description"})
+        self.assertEqual(frontmatter["name"], "claudex5-subagent-routing")
+        self.assertTrue(frontmatter["description"].startswith("Use when "))
+        self.assertIn("Superpowers", frontmatter["description"])
+        self.assertIn("subagent-driven-development", frontmatter["description"])
+        self.assertIn("executing-plans", frontmatter["description"])
+
+        content = skill_path.read_text(encoding="utf-8")
+        for required in (
+            "harness-researcher",
+            "harness-implementer",
+            "harness-implementer-opus",
+            "harness-architecture-reviewer",
+            "harness-judge",
+            "gpt-5.6-sol",
+            "gpt-5.6-luna",
+            "gpt-5.3-codex-spark",
+            "fable-advisor",
+            "Grok",
+            "build",
+            "lint",
+            "typecheck",
+            "test",
+        ):
+            self.assertIn(required, content)
+        self.assertIn("only when the user explicitly names", content)
+        self.assertLess(len(re.findall(r"\b[\w.-]+\b", content)), 500)
+
+        managed = (self.repository / "claude" / "managed-CLAUDE.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("claudex5-subagent-routing", managed)
+        self.assertIn("subagent-driven-development", managed)
+        self.assertIn("executing-plans", managed)
+
     def test_quality_gate_runs_available_package_scripts(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

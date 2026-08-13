@@ -153,6 +153,7 @@ for instruction in "$target_home/.claude/CLAUDE.md" "$target_home/.codex/AGENTS.
 done
 
 expected_links=(
+  "$target_home/.claude/skills/claudex5-subagent-routing/SKILL.md:$repo_root/claude/skills/claudex5-subagent-routing/SKILL.md"
   "$target_home/.claude/agents/harness-orchestrator.md:$repo_root/claude/agents/harness-orchestrator.md"
   "$target_home/.claude/agents/harness-researcher.md:$repo_root/claude/agents/harness-researcher.md"
   "$target_home/.claude/agents/harness-implementer.md:$repo_root/claude/agents/harness-implementer.md"
@@ -216,7 +217,19 @@ if command -v claude >/dev/null 2>&1; then
   else
     warn "Claude authentication unavailable; run: claude"
   fi
-  if HOME="$target_home" claude plugin list 2>/dev/null | grep -q 'codex@openai-codex'; then
+  plugin_list="$(HOME="$target_home" claude plugin list 2>/dev/null || true)"
+  if claudex5_plugin_enabled "$plugin_list" "superpowers"; then
+    pass "Superpowers is enabled; the Claudex5 adapter controls role routing"
+  fi
+  if claudex5_plugin_enabled "$plugin_list" "fable-advisor"; then
+    conflict_message="fable-advisor is enabled and may replace Claudex5 routing; run: claude plugin disable fable-advisor@fable-advisor"
+    if [[ "$strict" -eq 1 ]]; then
+      fail "$conflict_message"
+    else
+      warn "$conflict_message"
+    fi
+  fi
+  if claudex5_codex_plugin_enabled "$plugin_list"; then
     pass "official OpenAI Codex Claude Code plugin is installed"
     registry="$target_home/.claude/plugins/installed_plugins.json"
     helper_path=""

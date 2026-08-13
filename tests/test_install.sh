@@ -33,9 +33,11 @@ run_install() {
 run_install
 
 [[ -L "$test_home/.claude/agents/harness-orchestrator.md" ]]
+[[ -L "$test_home/.claude/skills/claudex5-subagent-routing/SKILL.md" ]]
 [[ -L "$test_home/.codex/agents/harness-sol-research.toml" ]]
 [[ ! -e "$test_home/.codex/agents/harness-spark-ui-iteration.toml" ]]
 [[ "$(readlink "$test_home/.claude/agents/harness-orchestrator.md")" == "$repo_root/claude/agents/harness-orchestrator.md" ]]
+[[ "$(readlink "$test_home/.claude/skills/claudex5-subagent-routing/SKILL.md")" == "$repo_root/claude/skills/claudex5-subagent-routing/SKILL.md" ]]
 grep -q "existing Claude instructions" "$test_home/.claude/CLAUDE.md"
 grep -q "existing Codex instructions" "$test_home/.codex/AGENTS.md"
 [[ "$(grep -c 'BEGIN CLAUDEX5' "$test_home/.claude/CLAUDE.md")" -eq 1 ]]
@@ -61,12 +63,14 @@ assert config.count("multi_agent = true") == 1
 PY
 
 run_install
+[[ -L "$test_home/.claude/skills/claudex5-subagent-routing/SKILL.md" ]]
 [[ "$(grep -c 'BEGIN CLAUDEX5' "$test_home/.claude/CLAUDE.md")" -eq 1 ]]
 [[ "$(grep -c '\[agents.harness_sol_review\]' "$test_home/.codex/config.toml")" -eq 1 ]]
 [[ "$(find "$test_home/.local/state/claudex5-engineering-harness/backups" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" -ge 1 ]]
 
 CLAUDEX5_PYTHON="$python_bin" "$repo_root/uninstall.sh" --home "$test_home"
 [[ ! -e "$test_home/.claude/agents/harness-orchestrator.md" ]]
+[[ ! -e "$test_home/.claude/skills/claudex5-subagent-routing/SKILL.md" ]]
 [[ ! -e "$test_home/.codex/agents/harness-sol-research.toml" ]]
 ! grep -q 'BEGIN CLAUDEX5' "$test_home/.claude/CLAUDE.md"
 ! grep -q '\[agents.harness_sol_review\]' "$test_home/.codex/config.toml"
@@ -82,6 +86,16 @@ if CLAUDEX5_PYTHON="$python_bin" CLAUDEX5_SKIP_PLUGIN=1 \
   exit 1
 fi
 grep -q "user-owned" "$collision_home/.claude/agents/harness-orchestrator.md"
+
+skill_collision_home="$test_root/skill-collision-home"
+mkdir -p "$skill_collision_home/.claude/skills/claudex5-subagent-routing"
+printf '%s\n' "user-owned skill" > "$skill_collision_home/.claude/skills/claudex5-subagent-routing/SKILL.md"
+if CLAUDEX5_PYTHON="$python_bin" CLAUDEX5_SKIP_PLUGIN=1 \
+  "$repo_root/install.sh" --home "$skill_collision_home" --skip-runtime-check >/dev/null 2>&1; then
+  printf '%s\n' "installer unexpectedly overwrote a skill collision" >&2
+  exit 1
+fi
+grep -q "user-owned skill" "$skill_collision_home/.claude/skills/claudex5-subagent-routing/SKILL.md"
 
 root_alias="$test_root/root-alias"
 ln -s / "$root_alias"
@@ -114,6 +128,7 @@ fi
 [[ "$(cat "$rollback_home/.claude/CLAUDE.md")" == "before rollback" ]]
 [[ "$(cat "$rollback_home/.codex/AGENTS.md")" == "before Codex rollback" ]]
 [[ ! -e "$rollback_home/.claude/agents/harness-orchestrator.md" ]]
+[[ ! -e "$rollback_home/.claude/skills/claudex5-subagent-routing/SKILL.md" ]]
 
 fake_bin="$test_root/fake-bin"
 spark_home="$test_root/spark-home"
@@ -125,7 +140,16 @@ cat > "$fake_bin/claude" <<'EOF'
 case "${1:-}" in
   --version) printf '%s\n' '2.1.226 (Claude Code)' ;;
   auth) exit 0 ;;
-  plugin) printf '%s\n' 'codex@openai-codex' ;;
+  plugin)
+    if [[ "${FAKE_FABLE_ADVISOR_ENABLED:-0}" == "1" ]]; then
+      cat <<'PLUGINS'
+  ❯ fable-advisor@fable-advisor
+    Version: 4.0.0
+    Scope: user
+    Status: ✔ enabled
+PLUGINS
+    fi
+    ;;
   *) exit 0 ;;
 esac
 EOF
@@ -168,6 +192,20 @@ PATH="$fake_bin:$PATH" FAKE_SPARK_AVAILABLE=0 CLAUDEX5_PYTHON="$python_bin" \
   CLAUDEX5_SKIP_PLUGIN=1 "$repo_root/install.sh" --home "$spark_home"
 [[ ! -e "$spark_home/.codex/agents/harness-spark-ui-iteration.toml" ]]
 ! grep -q '\[agents.harness_spark_ui_iteration\]' "$spark_home/.codex/config.toml"
+
+conflict_output="$test_root/fable-conflict.log"
+PATH="$fake_bin:$PATH" FAKE_SPARK_AVAILABLE=0 FAKE_FABLE_ADVISOR_ENABLED=1 \
+  CLAUDEX5_PYTHON="$python_bin" "$repo_root/verify.sh" --home "$spark_home" \
+  >"$conflict_output" 2>&1
+grep -q 'WARNING: fable-advisor is enabled' "$conflict_output"
+grep -q 'claude plugin disable fable-advisor@fable-advisor' "$conflict_output"
+if PATH="$fake_bin:$PATH" FAKE_SPARK_AVAILABLE=0 FAKE_FABLE_ADVISOR_ENABLED=1 \
+  CLAUDEX5_PYTHON="$python_bin" "$repo_root/verify.sh" --home "$spark_home" --strict \
+  >"$conflict_output" 2>&1; then
+  printf '%s\n' "strict verification must reject enabled fable-advisor" >&2
+  exit 1
+fi
+grep -q 'FAIL: fable-advisor is enabled' "$conflict_output"
 
 spark_collision_home="$test_root/spark-collision-home"
 mkdir -p "$spark_collision_home/.codex/agents"

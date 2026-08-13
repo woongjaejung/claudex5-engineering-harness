@@ -8,11 +8,12 @@ A global, installable orchestration policy for using Claude Code and OpenAI Code
 
 ## What this is
 
-Claudex5 installs **global instructions and global agent definitions**, not a `SKILL.md` skill. After installation:
+Claudex5 is primarily **global instructions and global agent definitions**. It also installs one narrow `SKILL.md` compatibility adapter so Superpowers can keep its development process while Claudex5 selects the roles and models. The adapter is not a replacement for the global policy. After installation:
 
 - `~/.claude/CLAUDE.md` tells the main Claude Code session how to route ordinary requests.
 - `~/.codex/AGENTS.md` gives Codex the same global working policy.
 - `~/.claude/agents/harness-*` provides Claude role definitions in fresh contexts.
+- `~/.claude/skills/claudex5-subagent-routing/SKILL.md` bridges Superpowers execution workflows to those roles.
 - `~/.codex/agents/harness-*` provides Codex model and reasoning configurations.
 - Existing hooks, plugins, project trust entries, MCP servers, status lines, and user instructions remain in place.
 
@@ -29,7 +30,11 @@ flowchart TD
     C -->|"One small existing-UI change"| SA{"Spark role installed?"}
     SA -->|"Yes"| SP["Codex-Spark<br/>fast bounded UI iteration"]
     SA -->|"No or run fails"| I
-    C -->|"Complex, ambiguous, multi-file, or risky"| O["Main session coordinates the workflow"]
+    C -->|"Complex, ambiguous, multi-file, or risky"| W{"Superpowers workflow selected?"}
+    W -->|"Yes"| SW["Superpowers owns process<br/>worktree · plan · task loop · checkpoints"]
+    W -->|"No"| O["Main session coordinates the workflow"]
+    SW --> A["Claudex5 routing adapter<br/>selects roles and models"]
+    A --> O
     O --> R["Claude Sonnet 5 high<br/>read-only research"]
     O --> I["Claude Sonnet 5 high<br/>primary implementation"]
     O --> SR["Codex Sol high<br/>independent difficult-problem research"]
@@ -46,6 +51,12 @@ flowchart TD
 ```
 
 The main session—not a nested subagent—is the coordinator because Claude Code subagents cannot spawn other subagents. Review agents do not edit the code they review.
+
+Superpowers and Claudex5 therefore complement each other:
+
+- Superpowers owns workflow mechanics: planning, worktrees, the task ledger, task-by-task execution, checkpoints, and review gates.
+- Claudex5 owns routing: researcher, implementer, optional Spark, Opus escalation, fresh Codex reviews, judge, and deterministic verification.
+- A competing routing plugin such as `fable-advisor` can replace this matrix. Verification detects it but never disables it automatically.
 
 ## Role matrix
 
@@ -146,6 +157,8 @@ Implement this login feature and test it.
 ```
 
 For a complex request, the global instructions tell the main session to investigate, implement, use independent reviews when warranted, and run deterministic checks. A small question or one-line edit stays direct.
+
+If Superpowers chooses `subagent-driven-development` or `executing-plans`, the main session loads the Claudex5 routing adapter automatically. Superpowers continues its normal task loop, but task implementers and reviewers come from the Claudex5 matrix. You do not need to name the adapter or answer a second execution-mode question.
 
 Good prompts still improve routing because they provide an outcome and constraints:
 
@@ -248,6 +261,7 @@ Automatic:
 - Independent review for meaningful changes
 - Repository build/lint/typecheck/test discovery and execution
 - Preservation and inspection of delegated results
+- Superpowers compatibility routing when `subagent-driven-development` or `executing-plans` is selected
 
 Manual or explicitly confirmed:
 
@@ -372,6 +386,19 @@ codex login status
 ./verify.sh --strict
 ```
 
+### Another orchestration plugin replaces Claudex5 roles
+
+Keep Superpowers enabled. It supplies workflow mechanics and is compatible with the installed adapter. Disable only the competing role router, then restart Claude Code:
+
+```bash
+claude plugin list
+claude plugin disable fable-advisor@fable-advisor
+./install.sh
+./verify.sh --strict
+```
+
+If `claude plugin list` reports project or local scope instead of user scope, pass that exact scope explicitly, for example `--scope project`. Claudex5 never disables the plugin automatically. To opt into it for a particular task, explicitly name `fable-advisor` in that task; the adapter permits exact user-requested overrides.
+
 ### Authentication is missing on a computer or server
 
 ```bash
@@ -392,7 +419,7 @@ Each backup contains `manifest.tsv` and only the configuration files that instal
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests -v
+python3.11 -m unittest discover -s tests -v
 bash tests/test_install.sh
 bash tests/test_bootstrap.sh
 bash tests/test_verify.sh

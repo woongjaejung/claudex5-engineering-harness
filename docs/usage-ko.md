@@ -2,7 +2,9 @@
 
 ## 핵심만 먼저
 
-이 프로젝트는 스킬이 아니라 Claude Code와 Codex의 **전역 지침 및 전역 에이전트 설정**입니다. 설치 후에는 어느 프로젝트에서든 평소처럼 `claude` 또는 `codex`를 실행하고 자연어로 요청하면 됩니다.
+이 프로젝트의 핵심은 Claude Code와 Codex의 **전역 지침 및 전역 에이전트 설정**입니다. 따라서 특정 작업에서만 수동 호출하는 일반 스킬과 달리, 설치 후 어느 프로젝트에서든 평소처럼 `claude` 또는 `codex`를 실행하고 자연어로 요청하면 적용됩니다.
+
+다만 Superpowers와 함께 사용할 때만 로드되는 작은 호환 어댑터 스킬 `claudex5-subagent-routing`도 설치합니다. 이 스킬은 하네스 전체를 스킬로 바꾸는 것이 아니라, Superpowers가 실행 절차를 맡는 동안 Claudex5가 역할과 모델 선택을 유지하게 연결합니다.
 
 ```bash
 cd 작업할-프로젝트
@@ -14,6 +16,17 @@ claude
 ```
 
 작은 요청은 메인 Claude가 바로 처리합니다. 여러 파일에 걸치거나 모호하고 위험한 작업은 자동으로 조사, 구현, 독립 검토, 결정적 검증 단계로 확장됩니다. 여기서 결정적 검증은 다른 AI의 의견이 아니라 build, lint, typecheck, test 명령의 실제 성공 여부를 뜻합니다.
+
+## Superpowers와 함께 사용할 때
+
+둘의 책임은 다음처럼 나뉩니다.
+
+- Superpowers: 계획, 작업공간(worktree), 작업 원장, 태스크 반복, 체크포인트, 리뷰 게이트
+- Claudex5: 조사자·구현자·리뷰어·판정자와 각 모델 선택, Spark 조건부 사용, 최종 실제 테스트
+
+Superpowers가 `subagent-driven-development` 또는 `executing-plans`를 선택하면 전역 지침이 `claudex5-subagent-routing`을 자동으로 로드합니다. 사용자는 평소처럼 “1번 방식으로 오케스트레이션해줘”라고 말하면 되고, 실행 방식을 두 번 고를 필요가 없습니다.
+
+`fable-advisor`처럼 자체 구현 lane과 모델 선택표를 가진 다른 오케스트레이션 플러그인이 켜져 있으면 Claudex5 라우팅을 대신할 수 있습니다. 이 경우 Superpowers는 그대로 두고 경쟁 라우터만 비활성화하는 것을 권장합니다.
 
 ## 설치
 
@@ -199,6 +212,25 @@ git pull --ff-only origin main
 ```bash
 ./verify.sh
 ```
+
+`fable-advisor`가 Claudex5 역할 대신 Grok 또는 자체 Codex lane을 호출할 때:
+
+```bash
+claude plugin list
+claude plugin disable fable-advisor@fable-advisor
+./install.sh
+./verify.sh --strict
+```
+
+목록에서 `Scope: project` 또는 `Scope: local`로 표시되면 해당 범위를 정확히 붙입니다.
+
+```bash
+claude plugin disable fable-advisor@fable-advisor --scope project
+```
+
+그 뒤 실행 중인 Claude Code 세션을 종료하고 다시 시작합니다. Superpowers는 비활성화하지 않으며, `./verify.sh --strict`는 `fable-advisor`가 계속 활성화되어 있으면 실패로 알려줍니다. 하네스는 기존 플러그인을 자동으로 끄지 않습니다.
+
+특정 작업에서 의도적으로 `fable-advisor`를 쓰고 싶다면 그 작업 프롬프트에 플러그인 이름을 정확히 명시하면 됩니다. 그 명시적 선택은 현재 작업에 한해 Claudex5 기본 라우팅보다 우선합니다.
 
 플러그인 명령이 보이지 않을 때 Claude Code 안에서 실행:
 

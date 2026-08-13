@@ -52,4 +52,31 @@ if claudex5_codex_plugin_enabled "$disabled_plugins"; then
   exit 1
 fi
 
+mixed_plugins='Installed plugins:
+
+  ❯ superpowers@claude-plugins-official
+    Version: 6.2.0
+    Scope: user
+    Status: ✔ enabled
+
+  ❯ fable-advisor@fable-advisor
+    Version: 4.0.0
+    Scope: user
+    Status: ✔ enabled
+
+  ❯ disabled-router@third-party
+    Version: 1.0.0
+    Scope: user
+    Status: disabled'
+claudex5_plugin_enabled "$mixed_plugins" "superpowers"
+claudex5_plugin_enabled "$mixed_plugins" "fable-advisor"
+if claudex5_plugin_enabled "$mixed_plugins" "disabled-router"; then
+  printf '%s\n' "disabled plugin must not be accepted as enabled" >&2
+  exit 1
+fi
+if claudex5_plugin_enabled "$mixed_plugins" "fable"; then
+  printf '%s\n' "substring-only plugin name must not match" >&2
+  exit 1
+fi
+
 printf '%s\n' "common helper tests: PASS"

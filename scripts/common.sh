@@ -48,14 +48,27 @@ claudex5_node_version_ok() {
   ' >/dev/null 2>&1
 }
 
-claudex5_codex_plugin_enabled() {
+claudex5_plugin_enabled() {
   local plugin_list="$1"
-  printf '%s\n' "$plugin_list" | awk '
-    /codex@openai-codex/ { in_plugin = 1; next }
-    in_plugin && /Status:/ { enabled = ($0 ~ /enabled/); exit }
-    in_plugin && /❯/ { exit }
-    END { exit !(in_plugin && enabled) }
+  local plugin_name="$2"
+  printf '%s\n' "$plugin_list" | awk -v wanted="$plugin_name" '
+    /^[[:space:]]*❯[[:space:]]*/ {
+      entry = $0
+      sub(/^[[:space:]]*❯[[:space:]]*/, "", entry)
+      split(entry, parts, "@")
+      in_plugin = (parts[1] == wanted)
+      next
+    }
+    in_plugin && /Status:/ {
+      found = 1
+      enabled = ($0 ~ /(^|[[:space:]])enabled([[:space:]]|$)/)
+    }
+    END { exit !(found && enabled) }
   '
+}
+
+claudex5_codex_plugin_enabled() {
+  claudex5_plugin_enabled "$1" "codex"
 }
 
 claudex5_backup_configs() {
