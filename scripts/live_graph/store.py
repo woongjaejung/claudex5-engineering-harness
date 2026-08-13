@@ -49,6 +49,7 @@ _SNAPSHOT_FIELDS = frozenset(
     {
         "schema_version", "session_id", "cwd", "title", "created_at", "updated_at",
         "sequence", "status", "degraded", "root_node_id", "nodes", "edges", "checkpoints",
+        "_event_log_size", "_event_log_mtime_ns", "_event_log_sequence",
     }
 )
 _NODE_FIELDS = frozenset(
@@ -77,6 +78,9 @@ def _valid_snapshot(snapshot: object, session_id: str) -> bool:
         return False
     if not _is_int(snapshot.get("sequence")) or snapshot.get("status") not in NODE_STATES:
         return False
+    for key in ("_event_log_size", "_event_log_mtime_ns", "_event_log_sequence"):
+        if key in snapshot and not _is_int(snapshot[key]):
+            return False
     if not isinstance(snapshot.get("degraded"), bool):
         return False
     try:
@@ -97,9 +101,9 @@ def _valid_snapshot(snapshot: object, session_id: str) -> bool:
             return False
         if node.get("id") != safe_node_id or node.get("kind") not in NODE_KINDS or node.get("state") not in NODE_STATES:
             return False
-        if not isinstance(node.get("label"), str) or not _is_int(node.get("sequence")) or not isinstance(node.get("created_at"), str):
+        if not isinstance(node.get("label"), str) or not _is_int(node.get("sequence")):
             return False
-        for key in ("description", "started_at", "finished_at", "role", "model", "effort"):
+        for key in ("description", "created_at", "started_at", "finished_at", "role", "model", "effort"):
             if key in node and not isinstance(node[key], str):
                 return False
         if "degraded" in node and not isinstance(node["degraded"], bool):
@@ -296,38 +300,46 @@ class StateStore:
             return None
         return value if isinstance(value, dict) else None
 
-    def _event_log_sequence(self, run_dir: Path, session_id: str) -> int | None:
-        """Return the greatest structurally valid durable event sequence."""
+    def _event_log_stat(self, run_dir: Path) -> os.stat_result | None:
         events_path = run_dir / "events.jsonl"
         self._reject_symlink(events_path)
         try:
-            lines = events_path.read_text(encoding="utf-8").splitlines()
-        except (FileNotFoundError, OSError, UnicodeError):
+            return events_path.stat()
+        except (FileNotFoundError, OSError):
             return None
-        greatest: int | None = None
-        for line in lines:
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(event, dict):
-                continue
-            sequence = event.get("sequence")
-            if (
-                event.get("schema_version") == SCHEMA_VERSION
-                and event.get("session_id") == session_id
-                and _is_int(sequence, minimum=1)
-            ):
-                greatest = max(greatest or 0, sequence)
-        return greatest
+
+    @staticmethod
+    def _mark_event_log(snapshot: dict[str, object], event_stat: os.stat_result | None, sequence: int) -> None:
+        if event_stat is None:
+            snapshot.pop("_event_log_size", None)
+            snapshot.pop("_event_log_mtime_ns", None)
+            snapshot.pop("_event_log_sequence", None)
+            return
+        snapshot["_event_log_size"] = event_stat.st_size
+        snapshot["_event_log_mtime_ns"] = event_stat.st_mtime_ns
+        snapshot["_event_log_sequence"] = sequence
 
     def _cached_is_current(
         self, snapshot: dict[str, object] | None, run_dir: Path, session_id: str
     ) -> bool:
         if not _valid_snapshot(snapshot, session_id):
             return False
-        log_sequence = self._event_log_sequence(run_dir, session_id)
-        return log_sequence is None or int(snapshot["sequence"]) >= log_sequence
+        event_stat = self._event_log_stat(run_dir)
+        if event_stat is None:
+            return True
+        marker_size = snapshot.get("_event_log_size")
+        marker_mtime = snapshot.get("_event_log_mtime_ns")
+        if marker_size is not None or marker_mtime is not None:
+            return marker_size == event_stat.st_size and marker_mtime == event_stat.st_mtime_ns
+
+        # Schema-v1 snapshots created before the durable marker are current when
+        # their atomic snapshot write followed the last append. This preserves
+        # legacy snapshots without replaying or rewriting them on ordinary reads.
+        snapshot_path = run_dir / "snapshot.json"
+        try:
+            return snapshot_path.stat().st_mtime_ns >= event_stat.st_mtime_ns
+        except OSError:
+            return False
 
     def _recover(self, run_dir: Path, session_id: str) -> dict[str, object] | None:
         events_path = run_dir / "events.jsonl"
@@ -338,6 +350,7 @@ class StateStore:
             return None
         valid_events: list[dict[str, object]] = []
         degraded = False
+        durable_sequence = 0
         for index, line in enumerate(lines):
             try:
                 value = json.loads(line)
@@ -348,6 +361,13 @@ class StateStore:
                     degraded = True
                 continue
             valid_events.append(value)
+            sequence = value.get("sequence")
+            if (
+                value.get("schema_version") == SCHEMA_VERSION
+                and value.get("session_id") == session_id
+                and _is_int(sequence, minimum=1)
+            ):
+                durable_sequence = max(durable_sequence, sequence)
         if not valid_events:
             return None
         cwd = ""
@@ -368,6 +388,7 @@ class StateStore:
                 degraded = True
         if degraded:
             snapshot["degraded"] = True
+        self._mark_event_log(snapshot, self._event_log_stat(run_dir), durable_sequence)
         return snapshot
 
     def _load_unlocked(self, run_dir: Path, session_id: str) -> dict[str, object] | None:
@@ -402,7 +423,8 @@ class StateStore:
             timestamp = _utc_now()
             if snapshot is None:
                 snapshot = new_snapshot(session_id, str(safe_payload.get("cwd", "")), timestamp)
-            sequence = int(snapshot.get("sequence", 0)) + 1
+            durable_sequence = int(snapshot.get("_event_log_sequence", snapshot.get("sequence", 0)))
+            sequence = max(int(snapshot.get("sequence", 0)), durable_sequence) + 1
             event: dict[str, object] = {
                 "schema_version": SCHEMA_VERSION,
                 "event_id": str(uuid4()),
@@ -421,6 +443,7 @@ class StateStore:
                 stream.write(json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
                 stream.flush()
                 os.fsync(stream.fileno())
+            self._mark_event_log(next_snapshot, self._event_log_stat(run_dir), sequence)
             self._write_snapshot(run_dir, next_snapshot)
             return event
         finally:

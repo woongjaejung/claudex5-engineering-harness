@@ -113,9 +113,9 @@ class WebDashboardAssetTests(unittest.TestCase):
           function Offline(){throw new Error('offline')}; const transport=createTransport({EventSourceImpl:Offline,fetchImpl:pollFetch,timers}); transport.open('selection=all',1);
           jobs.find((job)=>job.delay===FETCH_TIMEOUT_MS&&!job.cleared).fn(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
           transport.startFallbackPolling(1,true);
-          const errors=[]; const requests=[]; const controller=createSelectionController({timers,fetchImpl:(_url,{signal}={})=>new Promise((_resolve,reject)=>{requests.push(signal);signal.addEventListener('abort',()=>reject(new DOMException('timeout','AbortError')),{once:true})}),transport:{open(){},close(){}},onError:(value)=>errors.push(value)});
+          const errors=[]; const synced=[]; const requests=[]; const controller=createSelectionController({timers,fetchImpl:(_url,{signal}={})=>new Promise((_resolve,reject)=>{requests.push(signal);signal.addEventListener('abort',()=>reject(new DOMException('timeout','AbortError')),{once:true})}),transport:{open(){},close(){}},sync:(value)=>synced.push(value),onError:(value)=>errors.push(value)});
           const selected=controller.select('session=slow'); jobs.filter((job)=>job.delay===FETCH_TIMEOUT_MS&&!job.cleared).at(-1).fn(); await selected;
-          console.log(JSON.stringify({FETCH_TIMEOUT_MS,polls:polls.length,pollAborted:polls[0].aborted,state:transport.state(),requests:requests.length,selectionAborted:requests[0].aborted,errors}));
+          console.log(JSON.stringify({FETCH_TIMEOUT_MS,polls:polls.length,pollAborted:polls[0].aborted,state:transport.state(),requests:requests.length,selectionAborted:requests[0].aborted,errors,synced}));
         """)
         self.assertEqual(rendered["FETCH_TIMEOUT_MS"], 4000)
         self.assertEqual(rendered["polls"], 2)
@@ -124,6 +124,7 @@ class WebDashboardAssetTests(unittest.TestCase):
         self.assertEqual(rendered["requests"], 1)
         self.assertTrue(rendered["selectionAborted"])
         self.assertEqual(rendered["errors"], [])
+        self.assertEqual(rendered["synced"], ["selection=all"])
 
     def test_bootstrap_timeout_starts_all_selection_recovery_transport(self) -> None:
         rendered = run_app_script("""

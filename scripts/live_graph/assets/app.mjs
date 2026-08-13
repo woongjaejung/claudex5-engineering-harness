@@ -278,7 +278,10 @@ export function createSelectionController({fetchImpl, transport, timers = global
         if (!response?.ok) throw new Error("selection unavailable");
         nextBundle = await response.json();
       } catch (error) {
-        if (attempt === selectionAttemptGeneration && !isAbortError(error, request.controller)) { sync(query); onError("Selection unavailable"); }
+        if (attempt === selectionAttemptGeneration) {
+          sync(query);
+          if (!isAbortError(error, request.controller)) onError("Selection unavailable");
+        }
         return false;
       } finally {
         request.finish();

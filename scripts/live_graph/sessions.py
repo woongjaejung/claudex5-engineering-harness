@@ -84,6 +84,8 @@ def group_snapshots(
 def _project_snapshot(snapshot: dict[str, object]) -> dict[str, object]:
     """Copy a snapshot for presentation and omit legacy compatibility nodes."""
     projected = copy.deepcopy(snapshot)
+    for key in ("_event_log_size", "_event_log_mtime_ns", "_event_log_sequence"):
+        projected.pop(key, None)
     nodes = projected.get("nodes")
     edges = projected.get("edges")
     if not isinstance(nodes, dict):

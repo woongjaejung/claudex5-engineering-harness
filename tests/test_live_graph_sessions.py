@@ -140,6 +140,9 @@ class SessionQueryTests(unittest.TestCase):
         source = snapshot(
             "session-a", self.project_one, "running", "2026-08-14T03:00:00Z", nodes=nodes, edges=edges
         )
+        source.update(
+            {"_event_log_size": 123, "_event_log_mtime_ns": 456, "_event_log_sequence": 7}
+        )
         before = copy.deepcopy(source)
 
         bundle = build_bundle(MemoryStore([source]), SessionSelection.all())
@@ -149,6 +152,9 @@ class SessionQueryTests(unittest.TestCase):
         self.assertNotIn("old", projected["edges"])
         self.assertIn("task:stable", projected["nodes"])
         self.assertIn("new", projected["edges"])
+        self.assertNotIn("_event_log_size", projected)
+        self.assertNotIn("_event_log_mtime_ns", projected)
+        self.assertNotIn("_event_log_sequence", projected)
         self.assertEqual(source, before)
 
     def test_missing_selected_session_has_fixed_lookup_error(self) -> None:

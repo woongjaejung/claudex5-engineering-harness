@@ -154,6 +154,60 @@ class StateStoreTests(unittest.TestCase):
         self.assertEqual({item["session_id"] for item in snapshots}, {"healthy", "recoverable"})
         self.assertTrue((corrupt_dir / "snapshot.json").exists())
 
+    def test_legacy_schema_one_snapshot_without_node_created_at_remains_readable(self) -> None:
+        self.start("legacy")
+        snapshot_path = self.root / "legacy" / "snapshot.json"
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        for node in snapshot["nodes"].values():
+            node.pop("created_at", None)
+        for key in ("_event_log_size", "_event_log_mtime_ns", "_event_log_sequence"):
+            snapshot.pop(key, None)
+        snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+        original = snapshot_path.read_bytes()
+
+        loaded = StateStore(self.root).load("legacy")
+
+        self.assertEqual(loaded["session_id"], "legacy")
+        self.assertEqual(snapshot_path.read_bytes(), original)
+
+    def test_unchanged_cached_snapshot_does_not_replay_event_log(self) -> None:
+        self.start()
+        with mock.patch.object(self.store, "_recover", side_effect=AssertionError("unexpected replay")) as recover:
+            loaded = self.store.load("session-1")
+        self.assertEqual(loaded["sequence"], 1)
+        recover.assert_not_called()
+
+    def test_semantically_invalid_high_sequence_event_keeps_later_log_monotonic(self) -> None:
+        self.start()
+        run_dir = self.root / "session-1"
+        invalid = {
+            "schema_version": 1,
+            "event_id": "invalid-high",
+            "session_id": "session-1",
+            "sequence": 100,
+            "timestamp": "2026-08-14T00:00:00Z",
+            "event_type": "node.started",
+            "source": "test",
+            "node_id": "task:invalid",
+            "payload": {"kind": "not-a-node-kind"},
+        }
+        with (run_dir / "events.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(invalid) + "\n")
+
+        appended = StateStore(self.root).append(
+            "session-1", "checkpoint", "session:session-1", {"label": "valid next"}
+        )
+        self.assertEqual(appended["sequence"], 101)
+        self.assertEqual(
+            [json.loads(line)["sequence"] for line in (run_dir / "events.jsonl").read_text().splitlines()],
+            [1, 100, 101],
+        )
+        recovered = StateStore(self.root).load("session-1")
+        self.assertEqual(recovered["sequence"], 101)
+        self.assertTrue(recovered["degraded"])
+        with mock.patch.object(StateStore, "_recover", side_effect=AssertionError("unexpected replay")):
+            self.assertEqual(StateStore(self.root).load("session-1")["sequence"], 101)
+
     def test_latest_selects_newest_matching_canonical_project(self) -> None:
         other = Path(self.temporary.name) / "other"
         other.mkdir()
