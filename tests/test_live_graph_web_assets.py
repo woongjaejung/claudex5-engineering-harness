@@ -128,7 +128,7 @@ class WebDashboardAssetTests(unittest.TestCase):
           Source=Recovered; const retry=jobs.find((job)=>job.delay===5000 && !job.cleared); retry.fn(); globalThis.recovered.listeners.snapshot({data:JSON.stringify({revision:'fresh'})});
           console.log(JSON.stringify({attempts, applied, delays:jobs.map((job)=>job.delay), streams:transport.state().activeStreams, polling:transport.state().fallbackPolling}));
         """)
-        self.assertGreaterEqual(len(rendered["attempts"]), 2)
+        self.assertEqual(len(rendered["attempts"]), 1)
         self.assertEqual(rendered["applied"], [["fresh", 2]])
         self.assertIn(5000, rendered["delays"])
         self.assertEqual(rendered["streams"], 1)
@@ -179,6 +179,70 @@ class WebDashboardAssetTests(unittest.TestCase):
         self.assertEqual(rendered["completed"], "120:00:00")
         self.assertEqual(rendered["mini"], {"running": 1, "waiting": 1, "terminal": 0})
 
+    def test_accepted_poll_updates_committed_bundle_and_catalog_before_rollback(self) -> None:
+        rendered = run_app_script("""
+          const {createSelectionController}=await import(process.env.APP_URL); const applied=[]; const catalogs=[]; const opened=[]; const resolvers=[];
+          const fetchImpl=()=>new Promise((resolve)=>resolvers.push(resolve)); const transport={open:(q,g)=>opened.push([q,g]),close:()=>{}}; const controller=createSelectionController({transport,fetchImpl,apply:(b)=>applied.push(b.revision),refreshCatalog:(c)=>catalogs.push(c.map((x)=>x.session_id))});
+          controller.seed('session=a',{revision:'A0',catalog:[{session_id:'a'}],projects:[]});
+          controller.acceptStreamSnapshot(1,{revision:'A1',catalog:[{session_id:'a'},{session_id:'new'}],projects:[]});
+          const select=controller.select('session=b'); resolvers[0]({ok:true,json:async()=>({revision:'B',catalog:[{session_id:'b'}],projects:[]})}); await select;
+          controller.initialStreamFailed(2); resolvers[1]({ok:false,status:404}); await Promise.resolve(); await Promise.resolve();
+          console.log(JSON.stringify({state:controller.state(),applied,catalogs,opened}));
+        """)
+        self.assertEqual(rendered["state"]["bundle"]["revision"], "A1")
+        self.assertEqual(rendered["catalogs"][-1], ["a", "new"])
+        self.assertEqual(rendered["state"]["query"], "session=a")
+        self.assertEqual(rendered["opened"], [["session=a", 1], ["session=b", 2], ["session=a", 3]])
+
+    def test_transport_never_overlaps_deferred_polls_and_recovery_clears_fallback(self) -> None:
+        rendered = run_app_script("""
+          const {createTransport}=await import(process.env.APP_URL); const jobs=[]; let serial=0; const pending=[]; const streams=[];
+          const timers={setTimeout(fn,delay){const job={id:++serial,fn,delay,cleared:false};jobs.push(job);return job.id},clearTimeout(id){const job=jobs.find((x)=>x.id===id);if(job)job.cleared=true}};
+          let Recovered=null; function MaybeSource(url){if(!Recovered)throw new Error('offline');const source=new Recovered(url);streams.push(source);return source}
+          const fetchImpl=()=>new Promise((resolve)=>pending.push(resolve));
+          const transport=createTransport({EventSourceImpl:MaybeSource,fetchImpl,timers,onBundle:()=>{},onConnection:()=>{},onElapsed:()=>{}});
+          transport.open('session=a',1);
+          const retry=jobs.find((job)=>job.delay===5000&&!job.cleared); retry.fn();
+          const retryAgain=jobs.filter((job)=>job.delay===5000&&!job.cleared).at(-1); retryAgain.fn();
+          const beforeResolve={requests:pending.length,activeTimers:jobs.filter((job)=>job.delay===5000&&!job.cleared).length};
+          pending[0]({ok:true,json:async()=>({revision:'poll',projects:[]})}); await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+          const afterResolve=jobs.filter((job)=>job.delay===5000&&!job.cleared).length;
+          Recovered=class {constructor(url){this.url=url;this.listeners={}} addEventListener(name,fn){this.listeners[name]=fn} close(){this.closed=true}};
+          jobs.filter((job)=>job.delay===5000&&!job.cleared).at(-1).fn(); streams[0].listeners.snapshot({data:JSON.stringify({revision:'sse',projects:[]})});
+          console.log(JSON.stringify({beforeResolve,afterResolve,state:transport.state(),activeTimers:jobs.filter((job)=>job.delay===5000&&!job.cleared).length}));
+        """)
+        self.assertEqual(rendered["beforeResolve"]["requests"], 1)
+        self.assertLessEqual(rendered["beforeResolve"]["activeTimers"], 1)
+        self.assertLessEqual(rendered["afterResolve"], 2)  # one retry plus one next fallback at most
+        self.assertFalse(rendered["state"]["fallbackPolling"])
+        self.assertFalse(rendered["state"]["retryPending"])
+        self.assertEqual(rendered["activeTimers"], 0)
+
+    def test_elapsed_updates_only_structured_duration_nodes_and_back_handler_replaces(self) -> None:
+        rendered = run_app_script("""
+          const app=await import(process.env.APP_URL);
+          const card={dataset:{elapsed:'true',prefix:'7s ago',startedAt:'2026-08-14T00:00:00Z'},textContent:'7s ago · 00:00:07'};
+          const graphLine={dataset:{elapsed:'node',startedAt:'2026-08-14T00:00:00Z'},textContent:'running · 00:00:07'};
+          const terminal={dataset:{},textContent:'passed · 120:00:00'}; const detail={textContent:'selected task remains'};
+          const root={querySelectorAll:(selector)=>selector==='[data-elapsed="true"]'?[card]:selector==='[data-elapsed="node"]'?[graphLine]:[]};
+          app.updateElapsed(root,new Date('2026-08-14T00:00:09Z')); const identity={card:card===card,line:graphLine===graphLine,detail:detail.textContent};
+          class Element {constructor(){this.children=[];this.dataset={};this.classList={add(){},remove(){}};this.hidden=false;this.focusCount=0} append(...items){this.children.push(...items)} replaceChildren(...items){this.children=items} setAttribute(){} addEventListener(){} focus(){this.focusCount++}}
+          const ids=new Map(['all-view','focused-view','focus-title','focus-path','node-detail','graph','back-button'].map((id)=>[id,new Element()]));
+          globalThis.document={getElementById:(id)=>ids.get(id),createElement:()=>new Element(),createElementNS:()=>new Element()};
+          const snapshot={session_id:'a',title:'A',nodes:{},edges:[]}; let first=0;let second=0;
+          app.renderFocused(snapshot,()=>first++); app.renderFocused(snapshot,()=>second++); ids.get('back-button').onclick();
+          console.log(JSON.stringify({card:card.textContent,graph:graphLine.textContent,terminal:terminal.textContent,identity,first,second,backFocus:ids.get('back-button').focusCount}));
+        """)
+        self.assertEqual(rendered["card"], "7s ago · 00:00:09")
+        self.assertEqual(rendered["graph"], "running · 00:00:09")
+        self.assertEqual(rendered["terminal"], "passed · 120:00:00")
+        self.assertEqual(rendered["identity"]["detail"], "selected task remains")
+        self.assertTrue(rendered["identity"]["card"])
+        self.assertTrue(rendered["identity"]["line"])
+        self.assertEqual(rendered["first"], 0)
+        self.assertEqual(rendered["second"], 1)
+        self.assertEqual(rendered["backFocus"], 2)
+
     def test_staged_selection_preserves_active_then_rolls_back_only_on_confirmed_404(self) -> None:
         rendered = run_app_script("""
           const {createSelectionController} = await import(process.env.APP_URL);
@@ -206,18 +270,20 @@ class WebDashboardAssetTests(unittest.TestCase):
         rendered = run_app_script("""
           const app = await import(process.env.APP_URL);
           class Element {
-            constructor(tag='div') { this.tagName=tag; this.children=[]; this.attributes={}; this.dataset={}; this.style={}; this.listeners={}; this.classList={values:new Set(), add:(...v)=>v.forEach((x)=>this.classList.values.add(x)), remove:(...v)=>v.forEach((x)=>this.classList.values.delete(x)), toggle:(v,on)=>on ? this.classList.values.add(v) : this.classList.values.delete(v)}; this.textContent=''; this.hidden=false; }
-            append(...items) { this.children.push(...items); } replaceChildren(...items) { this.children=items; } setAttribute(key,value) { this.attributes[key]=String(value); } addEventListener(name, callback) { this.listeners[name]=callback; }
+            constructor(tag='div') { this.tagName=tag; this.children=[]; this.attributes={}; this.dataset={}; this.style={}; this.listeners={}; this.focusCount=0; this.classList={values:new Set(), add:(...v)=>v.forEach((x)=>this.classList.values.add(x)), remove:(...v)=>v.forEach((x)=>this.classList.values.delete(x)), toggle:(v,on)=>on ? this.classList.values.add(v) : this.classList.values.delete(v)}; this.textContent=''; this.hidden=false; }
+            append(...items) { this.children.push(...items); } replaceChildren(...items) { this.children=items; } setAttribute(key,value) { this.attributes[key]=String(value); } addEventListener(name, callback) { this.listeners[name]=callback; } focus() { this.focusCount += 1; }
           }
           const ids=new Map(['all-view','empty-state','focused-view','focus-title','focus-path','node-detail','graph','back-button','session-selector'].map((id)=>[id,new Element()]));
           globalThis.document={getElementById:(id)=>ids.get(id), createElement:(tag)=>new Element(tag), createElementNS:(_ns,tag)=>new Element(tag)};
           const node={id:'task:full',kind:'task',label:'Complete safe subject without clipping',description:'Complete safe description without clipping',state:'running',sequence:1,model:'model-x',effort:'high',started_at:'2026-08-14T10:00:00Z'};
           const bundle={projects:[{cwd:'/one',running:[{session_id:'a',title:'Running A',status:'running',nodes:{'task:full':node},edges:[]}],completed:[{session_id:'done',title:'Completed A',status:'passed',nodes:{},edges:[]}]},{cwd:'/two',running:[{session_id:'b',title:'Running B',status:'running',nodes:{},edges:[]}],completed:[]}]};
           app.populateSelector([{session_id:'a',title:'Running A',cwd:'/one'},{session_id:'b',title:'Running B',cwd:'/two'}],'selection=all');
+          app.populateSelector([{session_id:'b',title:'Running B',cwd:'/two'}],'session=a'); const retainedSelector=ids.get('session-selector').children.map((entry)=>entry.textContent); const retainedValue=ids.get('session-selector').value;
+          app.populateSelector([{session_id:'a',title:'Running A',cwd:'/one'},{session_id:'b',title:'Running B',cwd:'/two'}],'selection=all');
           app.renderAll(bundle,()=>{}); const firstProject=ids.get('all-view').children[0]; const runningCard=firstProject.children[1].children[0]; const completed=firstProject.children[2]; const completedTiming=completed.children[1].children[0].children[2];
           app.renderFocused(bundle.projects[0].running[0],()=>app.renderAll(bundle,()=>{})); const graph=ids.get('graph'); const group=graph.children.find((child)=>child.attributes.class === 'node node-running'); group.listeners.click();
-          const detail=ids.get('node-detail').children.map((entry)=>entry.textContent); ids.get('back-button').listeners.click();
-          console.log(JSON.stringify({projectCount:ids.get('all-view').children.length, cardTag:runningCard.tagName, completedTag:completed.tagName, completedOpen:completed.open === true, completedRepaints:completedTiming.dataset.elapsed === 'true', selector:ids.get('session-selector').children.map((entry)=>entry.textContent), nodeRect:group.children[1].attributes, transform:group.attributes.transform, detail, title:group.children[0].textContent, allVisible:!ids.get('all-view').hidden, focusedHidden:ids.get('focused-view').hidden}));
+          const detail=ids.get('node-detail').children.map((entry)=>entry.textContent); ids.get('back-button').onclick();
+          console.log(JSON.stringify({projectCount:ids.get('all-view').children.length, cardTag:runningCard.tagName, completedTag:completed.tagName, completedOpen:completed.open === true, completedRepaints:completedTiming.dataset.elapsed === 'true', selector:ids.get('session-selector').children.map((entry)=>entry.textContent), retainedSelector, retainedValue, nodeRect:group.children[1].attributes, transform:group.attributes.transform, detail, title:group.children[0].textContent, focusCount:ids.get('back-button').focusCount, allVisible:!ids.get('all-view').hidden, focusedHidden:ids.get('focused-view').hidden}));
         """)
         self.assertEqual(rendered["projectCount"], 2)
         self.assertEqual(rendered["cardTag"], "button")
@@ -225,11 +291,14 @@ class WebDashboardAssetTests(unittest.TestCase):
         self.assertFalse(rendered["completedOpen"])
         self.assertFalse(rendered["completedRepaints"])
         self.assertEqual(rendered["selector"], ["All sessions", "Running A — /one", "Running B — /two"])
+        self.assertEqual(rendered["retainedSelector"], ["All sessions", "Running B — /two", "a — active session"])
+        self.assertEqual(rendered["retainedValue"], "session=a")
         self.assertEqual(rendered["nodeRect"]["width"], "180")
         self.assertEqual(rendered["nodeRect"]["height"], "62")
         self.assertEqual(rendered["transform"], "translate(30 30)")
         self.assertEqual(rendered["title"], "Complete safe subject without clipping")
         self.assertEqual(rendered["detail"], ["Complete safe subject without clipping", "Complete safe description without clipping"])
+        self.assertEqual(rendered["focusCount"], 1)
         self.assertTrue(rendered["allVisible"])
         self.assertTrue(rendered["focusedHidden"])
 

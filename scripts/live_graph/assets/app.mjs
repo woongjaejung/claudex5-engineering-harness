@@ -101,6 +101,7 @@ export function createTransport({EventSourceImpl, fetchImpl, timers = globalThis
   let sourceAttempt = 0;
   let activeSourceAttempt = 0;
   let pollAttempt = 0;
+  let pollInFlight = false;
 
   const clear = (id) => { if (id !== null) timers.clearTimeout(id); };
   const clearTimers = () => { clear(fallbackTimer); clear(retryTimer); clear(elapsedTimer); fallbackTimer = retryTimer = elapsedTimer = null; };
@@ -118,22 +119,25 @@ export function createTransport({EventSourceImpl, fetchImpl, timers = globalThis
     }, 5000);
   };
   const poll = (generation) => {
-    if (generation !== selectionGeneration || stopped) return;
+    if (generation !== selectionGeneration || stopped || pollInFlight) return;
     const attempt = ++pollAttempt;
+    pollInFlight = true;
     Promise.resolve(fetchImpl?.(`/api/snapshot?${query}`)).then(async (response) => {
       if (!response?.ok || !canApplyPollResult(selectionGeneration, generation, streamHealthy)) return;
       const bundle = await response.json();
       if (attempt !== pollAttempt || !canApplyPollResult(selectionGeneration, generation, streamHealthy) || stopped) return;
       onBundle(bundle, {source: "poll", generation});
     }).catch(() => {}).finally(() => {
-      if (generation === selectionGeneration && !stopped && !streamHealthy) {
+      pollInFlight = false;
+      if (attempt === pollAttempt && generation === selectionGeneration && !stopped && !streamHealthy) {
+        clear(fallbackTimer);
         fallbackTimer = timers.setTimeout(() => poll(generation), 5000);
       }
     });
   };
   const startFallbackPolling = (generation, immediate = false) => {
     if (generation !== selectionGeneration || stopped || streamHealthy) return;
-    clear(fallbackTimer);
+    clear(fallbackTimer); fallbackTimer = null;
     if (immediate) poll(generation);
     else fallbackTimer = timers.setTimeout(() => poll(generation), 5000);
   };
@@ -173,10 +177,10 @@ export function createTransport({EventSourceImpl, fetchImpl, timers = globalThis
   return {
     open(nextQuery, generation) {
       stopped = false; query = normaliseQuery(nextQuery); selectionGeneration = generation;
-      closeStream(); clearTimers(); streamHealthy = false;
+      pollAttempt += 1; closeStream(); clearTimers(); streamHealthy = false;
       onConnection("connecting"); scheduleElapsed(); openEventSource(generation);
     },
-    close() { stopped = true; closeStream(); clearTimers(); streamHealthy = false; },
+    close() { stopped = true; pollAttempt += 1; closeStream(); clearTimers(); streamHealthy = false; },
     startFallbackPolling: (generation, immediate = true) => startFallbackPolling(generation, immediate),
     state: () => ({generation: selectionGeneration, activeStreams: stream ? 1 : 0, streamHealthy, fallbackPolling: fallbackTimer !== null, retryPending: retryTimer !== null}),
   };
@@ -276,7 +280,7 @@ function drawGraph(snapshot, onNode) {
     const title=svgElement("title"); title.textContent=safeText(node.label || node.id); group.append(title);
     group.append(svgElement("rect", {class:"node-frame", width:180, height:62})); group.append(svgElement("rect", {class:"node-accent", width:4, height:62}));
     const subject=svgElement("text", {class:"node-label", x:12, y:22}); subject.textContent=clipped(node.label || node.id, 25); group.append(subject);
-    const line=svgElement("text", {class:"node-meta", x:12, y:42}); line.textContent=clipped(`${state} · ${formatDuration(node.started_at, TERMINAL.has(state) ? node.finished_at : new Date())}`, 29); group.append(line);
+    const line=svgElement("text", {class:"node-meta", x:12, y:42}); if (!TERMINAL.has(state)) { line.dataset.elapsed="node"; line.dataset.startedAt=String(node.started_at || ""); } line.textContent=clipped(`${state} · ${formatDuration(node.started_at, TERMINAL.has(state) ? node.finished_at : new Date())}`, 29); group.append(line);
     const model=svgElement("text", {class:"node-kind", x:12, y:55}); model.textContent=clipped([node.model,node.effort].filter(Boolean).join(" · ") || node.kind || "node", 28); group.append(model);
     group.addEventListener("click", () => onNode(node)); group.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onNode(node); } }); svg.append(group);
   }
@@ -288,7 +292,7 @@ function renderCard(view, parent, focus) {
   const title=document.createElement("strong"); title.textContent=view.title; card.append(title);
   const meta=document.createElement("span"); meta.textContent=`${view.state.toUpperCase()} · ${view.progress.complete}/${view.progress.total}`; card.append(meta);
   const timing=document.createElement("span"); timing.className="card-timing";
-  if (view.state === "running") { timing.dataset.elapsed="true"; timing.dataset.startedAt=String(view.snapshot.started_at || view.snapshot.created_at || view.snapshot.updated_at || ""); }
+  if (view.state === "running") { timing.dataset.elapsed="true"; timing.dataset.startedAt=String(view.snapshot.started_at || view.snapshot.created_at || view.snapshot.updated_at || ""); timing.dataset.prefix=view.updatedAge; }
   timing.textContent=`${view.updatedAge} · ${view.elapsed}`; card.append(timing);
   const graph=document.createElement("span"); graph.className="micro-graph"; graph.dataset.running=String(view.mini.running); graph.dataset.waiting=String(view.mini.waiting); graph.dataset.terminal=String(view.mini.terminal); graph.setAttribute("aria-label", `${view.mini.running} running, ${view.mini.waiting} waiting, ${view.mini.terminal} terminal nodes`);
   for (const state of ["running", "waiting", "terminal"]) { const segment=document.createElement("i"); segment.className=`micro-${state}`; segment.style.flexGrow=String(Math.max(0.25, view.mini[state])); graph.append(segment); }
@@ -310,7 +314,7 @@ export function renderFocused(snapshot, onBack) {
   byId("all-view").hidden=true; const focused=byId("focused-view"); focused.hidden=false;
   byId("focus-title").textContent=safeText(snapshot.title || snapshot.session_id); byId("focus-path").textContent=safeText(snapshot.cwd); const detail=byId("node-detail"); detail.replaceChildren();
   drawGraph(snapshot, (node) => { detail.replaceChildren(); const heading=document.createElement("h3"); heading.textContent=safeText(node.label || node.id); const description=document.createElement("p"); description.textContent=safeText(node.description || "No safe task description recorded."); detail.append(heading,description); });
-  byId("back-button").addEventListener("click", onBack, {once:true});
+  const back=byId("back-button"); back.onclick=onBack; back.focus();
 }
 
 export function applyBundle(bundle, {focusedSnapshot = null, focus, now = new Date()} = {}) {
@@ -322,6 +326,17 @@ export function findSnapshot(bundle, sessionId) {
   return null;
 }
 
+export function updateElapsed(root = document, now = new Date()) {
+  for (const node of root.querySelectorAll?.('[data-elapsed="true"]') || []) {
+    const prefix=safeText(node.dataset.prefix || node.textContent.split(" · ")[0]);
+    node.textContent=`${prefix} · ${formatDuration(node.dataset.startedAt, now)}`;
+  }
+  for (const node of root.querySelectorAll?.('[data-elapsed="node"]') || []) {
+    const state=safeText(node.textContent.split(" · ")[0]);
+    node.textContent=clipped(`${state} · ${formatDuration(node.dataset.startedAt, now)}`,29);
+  }
+}
+
 function queryFromLocation() { const params=new URLSearchParams(window.location.search); return params.get("selection") === "all" ? "selection=all" : `session=${encodeURIComponent(params.get("session") || "")}`; }
 
 function boot() {
@@ -329,7 +344,7 @@ function boot() {
   const setConnection=(state) => { const messages={connected:"LOCAL / CONNECTED", connecting:"LOCAL / CONNECTING", reconnecting:"LOCAL / RECONNECTING", degraded:"LOCAL / DEGRADED"}; byId("connection").dataset.state=state; byId("connection-text").textContent=messages[state] || messages.connecting; };
   const render=() => { const focused=focusedSessionId ? findSnapshot(lastBundle, focusedSessionId) : null; if (focusedSessionId && !focused) focusedSessionId=null; if (focused) renderFocused(focused, () => { focusedSessionId=null; renderAll(lastBundle, chooseFocus, new Date(), {openProjects}); const origin=document.querySelector(`[data-session="${CSS.escape(originSessionId || "")}"]`); origin?.focus(); window.scrollTo(0,scrollY); }); else renderAll(lastBundle || {projects:[]}, chooseFocus, new Date(), {openProjects}); };
   const chooseFocus=(snapshot) => { scrollY=window.scrollY; originSessionId=safeText(snapshot.session_id); focusedSessionId=originSessionId; render(); };
-  const transport=createTransport({EventSourceImpl:globalThis.EventSource, fetchImpl:globalThis.fetch?.bind(globalThis), onBundle:(bundle,meta) => { if (meta.source === "sse") controller?.acceptStreamSnapshot(meta.generation,bundle); else { lastBundle=bundle; render(); } }, onConnection:setConnection, onElapsed:render, onInitialFailure:(generation) => controller?.initialStreamFailed(generation)});
+  const transport=createTransport({EventSourceImpl:globalThis.EventSource, fetchImpl:globalThis.fetch?.bind(globalThis), onBundle:(bundle,meta) => controller?.acceptStreamSnapshot(meta.generation,bundle), onConnection:setConnection, onElapsed:() => updateElapsed(document,new Date()), onInitialFailure:(generation) => controller?.initialStreamFailed(generation)});
   controller=createSelectionController({fetchImpl:globalThis.fetch?.bind(globalThis), transport, apply:(bundle) => { lastBundle=bundle; render(); }, sync:(query) => { const url=`${window.location.pathname}?${query}`; window.history.replaceState({}, "", url); byId("session-selector").value=query; }, refreshCatalog:(catalog,query) => populateSelector(catalog,query), onError:(message) => { byId("selection-error").textContent=message; }, clearError:() => { byId("selection-error").textContent=""; }});
   byId("session-selector").addEventListener("change", (event) => controller.select(event.target.value));
   const initial=queryFromLocation(); fetch(`/api/snapshot?${initial}`).then((response) => response.ok ? response.json() : Promise.reject()).then((bundle) => controller.seed(initial,bundle)).catch(() => { setConnection("reconnecting"); render(); });
@@ -337,7 +352,9 @@ function boot() {
 
 export function populateSelector(catalog, selected) {
   const selector=byId("session-selector"); selector.replaceChildren(); const all=document.createElement("option"); all.value="selection=all"; all.textContent="All sessions"; selector.append(all);
-  for (const row of catalog) { const option=document.createElement("option"); option.value=`session=${encodeURIComponent(safeText(row.session_id))}`; option.textContent=`${safeText(row.title || row.session_id)} — ${safeText(row.cwd)}`; selector.append(option); }
+  const selectedSession=new URLSearchParams(selected).get("session"); const rows=Array.isArray(catalog) ? catalog : [];
+  for (const row of rows) { const option=document.createElement("option"); option.value=`session=${encodeURIComponent(safeText(row.session_id))}`; option.textContent=`${safeText(row.title || row.session_id)} — ${safeText(row.cwd)}`; selector.append(option); }
+  if (selectedSession && !rows.some((row) => safeText(row.session_id) === selectedSession)) { const option=document.createElement("option"); option.value=`session=${encodeURIComponent(selectedSession)}`; option.textContent=`${selectedSession} — active session`; selector.append(option); }
   selector.value=selected;
 }
 
