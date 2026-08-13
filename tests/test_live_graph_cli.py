@@ -306,6 +306,28 @@ class LiveGraphCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("selected session is unavailable", result.stderr)
 
+    def test_web_all_is_rejected_before_starting_dynamic_latest_server(self) -> None:
+        stderr = io.StringIO()
+        with unittest.mock.patch("scripts.live_graph.web.serve_dashboard") as serve, \
+             unittest.mock.patch.object(live_graph_cli.sys, "stderr", stderr), \
+             self.assertRaises(SystemExit) as error:
+            live_graph_cli.main(["dashboard", "--web", "--all"])
+
+        self.assertEqual(error.exception.code, 2)
+        serve.assert_not_called()
+        self.assertIn("all-session web view requires the streaming web backend", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+        self.assertNotIn(str(self.base), stderr.getvalue())
+
+    def test_web_session_selection_is_passed_as_a_fixed_identifier(self) -> None:
+        with unittest.mock.patch("scripts.live_graph.web.serve_dashboard", return_value=0) as serve:
+            result = live_graph_cli.main([
+                "dashboard", "--web", "--session-id", "fixed-session", "--no-open",
+            ])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(serve.call_args.args[1], "fixed-session")
+
     def test_interactive_selector_accepts_default_numeric_all_invalid_eof_and_quit(self) -> None:
         rows = [
             {"session_id": "session-1", "cwd": "/work/one", "title": "One", "status": "running", "updated_at": "2026-08-14T12:00:00Z"},
