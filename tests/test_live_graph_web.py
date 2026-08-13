@@ -5,7 +5,7 @@ import json
 import threading
 import unittest
 from urllib.error import HTTPError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from scripts.live_graph.web import APP_JS, create_server
 
@@ -106,6 +106,22 @@ class WebDashboardTests(unittest.TestCase):
 
         self.assertEqual(payload, SAMPLE_SNAPSHOT)
         self.assertEqual(store.loaded_session_ids, ["selected-session"])
+        self.assertEqual(store.latest_calls, 0)
+
+    def test_rejects_foreign_host_header_before_reading_snapshot(self) -> None:
+        store = MemoryStore()
+        with running_server(store) as base_url:
+            request = Request(base_url + "/api/snapshot", headers={"Host": "attacker.example"})
+            with self.assertRaises(HTTPError) as raised:
+                urlopen(request)
+
+            error = raised.exception
+            try:
+                self.assertEqual(error.code, 403)
+                self.assertEqual(error.read().decode("utf-8"), "Forbidden.\n")
+            finally:
+                error.close()
+
         self.assertEqual(store.latest_calls, 0)
 
     def test_snapshot_route_selects_latest_run_and_represents_empty_state(self) -> None:

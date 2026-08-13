@@ -532,7 +532,21 @@ def make_handler(store: Any, session_id: str | None = None) -> type[BaseHTTPRequ
             self.end_headers()
             self.wfile.write(body)
 
+        def _trusted_host(self) -> bool:
+            host_header = self.headers.get("Host", "")
+            bound_host, bound_port = self.server.server_address[:2]
+            allowed = {
+                f"{bound_host}:{bound_port}",
+                f"localhost:{bound_port}",
+            }
+            if ":" in str(bound_host):
+                allowed.add(f"[{bound_host}]:{bound_port}")
+            return host_header.lower() in {value.lower() for value in allowed}
+
         def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
+            if not self._trusted_host():
+                self._send(403, "text/plain; charset=utf-8", b"Forbidden.\n")
+                return
             if self.path in assets:
                 content_type, body = assets[self.path]
                 self._send(200, content_type, body)
