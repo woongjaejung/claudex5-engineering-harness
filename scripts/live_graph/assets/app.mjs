@@ -102,10 +102,12 @@ export function createTransport({EventSourceImpl, fetchImpl, timers = globalThis
   let activeSourceAttempt = 0;
   let pollAttempt = 0;
   let pollInFlight = false;
+  let pollController = null;
 
   const clear = (id) => { if (id !== null) timers.clearTimeout(id); };
   const clearTimers = () => { clear(fallbackTimer); clear(retryTimer); clear(elapsedTimer); fallbackTimer = retryTimer = elapsedTimer = null; };
   const closeStream = () => { activeSourceAttempt = ++sourceAttempt; if (stream && typeof stream.close === "function") stream.close(); stream = null; };
+  const abortPoll = () => { pollAttempt += 1; if (pollController?.abort) pollController.abort(); pollController = null; pollInFlight = false; };
   const scheduleElapsed = () => {
     clear(elapsedTimer);
     elapsedTimer = timers.setTimeout(() => { if (!stopped) { onElapsed(); scheduleElapsed(); } }, 1000);
@@ -121,15 +123,19 @@ export function createTransport({EventSourceImpl, fetchImpl, timers = globalThis
   const poll = (generation) => {
     if (generation !== selectionGeneration || stopped || pollInFlight) return;
     const attempt = ++pollAttempt;
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
     pollInFlight = true;
-    Promise.resolve(fetchImpl?.(`/api/snapshot?${query}`)).then(async (response) => {
+    pollController = controller;
+    Promise.resolve(fetchImpl?.(`/api/snapshot?${query}`, controller ? {signal: controller.signal} : {})).then(async (response) => {
       if (!response?.ok || !canApplyPollResult(selectionGeneration, generation, streamHealthy)) return;
       const bundle = await response.json();
       if (attempt !== pollAttempt || !canApplyPollResult(selectionGeneration, generation, streamHealthy) || stopped) return;
       onBundle(bundle, {source: "poll", generation});
     }).catch(() => {}).finally(() => {
+      if (attempt !== pollAttempt) return;
       pollInFlight = false;
-      if (attempt === pollAttempt && generation === selectionGeneration && !stopped && !streamHealthy) {
+      if (pollController === controller) pollController = null;
+      if (generation === selectionGeneration && !stopped && !streamHealthy) {
         clear(fallbackTimer);
         fallbackTimer = timers.setTimeout(() => poll(generation), 5000);
       }
@@ -177,12 +183,12 @@ export function createTransport({EventSourceImpl, fetchImpl, timers = globalThis
   return {
     open(nextQuery, generation) {
       stopped = false; query = normaliseQuery(nextQuery); selectionGeneration = generation;
-      pollAttempt += 1; closeStream(); clearTimers(); streamHealthy = false;
+      abortPoll(); closeStream(); clearTimers(); streamHealthy = false;
       onConnection("connecting"); scheduleElapsed(); openEventSource(generation);
     },
-    close() { stopped = true; pollAttempt += 1; closeStream(); clearTimers(); streamHealthy = false; },
+    close() { stopped = true; abortPoll(); closeStream(); clearTimers(); streamHealthy = false; },
     startFallbackPolling: (generation, immediate = true) => startFallbackPolling(generation, immediate),
-    state: () => ({generation: selectionGeneration, activeStreams: stream ? 1 : 0, streamHealthy, fallbackPolling: fallbackTimer !== null, retryPending: retryTimer !== null}),
+    state: () => ({generation: selectionGeneration, activeStreams: stream ? 1 : 0, streamHealthy, pollingInFlight: pollInFlight, fallbackPolling: fallbackTimer !== null, retryPending: retryTimer !== null}),
   };
 }
 
@@ -194,6 +200,12 @@ export function createSelectionController({fetchImpl, transport, apply = () => {
   let previous = null;
   let candidateController = null;
   let candidateAwaitingFirstSnapshot = false;
+  const acceptBundle = (generation, acceptedBundle, confirmsCandidate) => {
+    if (generation !== selectionGeneration) return false;
+    if (acceptedBundle) { bundle = acceptedBundle; refreshCatalog(bundle.catalog || [], query); apply(bundle); }
+    if (confirmsCandidate) { candidateAwaitingFirstSnapshot = false; previous = null; }
+    clearError(); return true;
+  };
   const commit = (nextQuery, nextBundle) => {
     previous = bundle ? {query, bundle} : null;
     selectionGeneration += 1; query = normaliseQuery(nextQuery); bundle = nextBundle;
@@ -224,11 +236,9 @@ export function createSelectionController({fetchImpl, transport, apply = () => {
       commit(candidate, nextBundle); return true;
     },
     acceptStreamSnapshot(generation, acceptedBundle = null) {
-      if (generation !== selectionGeneration) return false;
-      candidateAwaitingFirstSnapshot = false; previous = null;
-      if (acceptedBundle) { bundle = acceptedBundle; refreshCatalog(bundle.catalog || [], query); apply(bundle); }
-      clearError(); return true;
+      return acceptBundle(generation, acceptedBundle, true);
     },
+    acceptPollSnapshot(generation, acceptedBundle = null) { return acceptBundle(generation, acceptedBundle, false); },
     async initialStreamFailed(generation = selectionGeneration) {
       const failedQuery = query;
       let response;
@@ -276,7 +286,7 @@ function drawGraph(snapshot, onNode) {
   const defs = svgElement("defs"); const marker = svgElement("marker", {id:"arrow", viewBox:"0 0 8 8", refX:7, refY:4, markerWidth:7, markerHeight:7, orient:"auto"}); marker.append(svgElement("path", {d:"M 0 0 L 8 4 L 0 8 z", fill:"#4d6670"})); defs.append(marker); svg.append(defs);
   for (const edge of graph.edges) { const from=nodePosition(graph, String(edge.source)); const to=nodePosition(graph, String(edge.target)); svg.append(svgElement("path", {d:`M ${from.x + 180} ${from.y + 31} C ${from.x + 202} ${from.y + 31}, ${to.x - 22} ${to.y + 31}, ${to.x} ${to.y + 31}`, class:`edge ${safeText(edge.kind).replace(/[^a-z_]/g, "")}`})); }
   for (const node of graph.nodes) {
-    const state=STATES.has(String(node.state)) ? String(node.state) : "waiting"; const pos=nodePosition(graph, String(node.id)); const group=svgElement("g", {class:`node node-${state}`, transform:`translate(${pos.x} ${pos.y})`, tabindex:0, role:"button"});
+    const state=STATES.has(String(node.state)) ? String(node.state) : "waiting"; const pos=nodePosition(graph, String(node.id)); const group=svgElement("g", {class:`node node-${state}`, transform:`translate(${pos.x} ${pos.y})`, tabindex:0, role:"button", "data-node-id":String(node.id)});
     const title=svgElement("title"); title.textContent=safeText(node.label || node.id); group.append(title);
     group.append(svgElement("rect", {class:"node-frame", width:180, height:62})); group.append(svgElement("rect", {class:"node-accent", width:4, height:62}));
     const subject=svgElement("text", {class:"node-label", x:12, y:22}); subject.textContent=clipped(node.label || node.id, 25); group.append(subject);
@@ -310,11 +320,18 @@ export function renderAll(bundle, focus, now = new Date(), {openProjects = new S
   byId("empty-state").classList.toggle("hidden", model.projects.length > 0);
 }
 
-export function renderFocused(snapshot, onBack) {
+function renderNodeDetail(detail, node) {
+  detail.replaceChildren(); const heading=document.createElement("h3"); heading.textContent=safeText(node.label || node.id); const description=document.createElement("p"); description.textContent=safeText(node.description || "No safe task description recorded."); detail.append(heading,description);
+}
+
+export function renderFocused(snapshot, onBack, {focusBack = true, selectedNodeId = null, onNodeSelected = () => {}} = {}) {
   byId("all-view").hidden=true; const focused=byId("focused-view"); focused.hidden=false;
   byId("focus-title").textContent=safeText(snapshot.title || snapshot.session_id); byId("focus-path").textContent=safeText(snapshot.cwd); const detail=byId("node-detail"); detail.replaceChildren();
-  drawGraph(snapshot, (node) => { detail.replaceChildren(); const heading=document.createElement("h3"); heading.textContent=safeText(node.label || node.id); const description=document.createElement("p"); description.textContent=safeText(node.description || "No safe task description recorded."); detail.append(heading,description); });
-  const back=byId("back-button"); back.onclick=onBack; back.focus();
+  const selected=Object.values(snapshot.nodes || {}).find((node) => safeText(node?.id) === safeText(selectedNodeId)); if (selected) renderNodeDetail(detail, selected);
+  const activeNodeId=focusBack ? "" : safeText(document.activeElement?.dataset?.nodeId);
+  drawGraph(snapshot, (node) => { renderNodeDetail(detail,node); onNodeSelected(safeText(node.id)); });
+  const back=byId("back-button"); back.onclick=onBack; if (focusBack) back.focus();
+  if (activeNodeId) for (const node of byId("graph").querySelectorAll?.("[data-node-id]") || []) if (safeText(node.dataset?.nodeId) === activeNodeId) { node.focus(); break; }
 }
 
 export function applyBundle(bundle, {focusedSnapshot = null, focus, now = new Date()} = {}) {
@@ -340,11 +357,11 @@ export function updateElapsed(root = document, now = new Date()) {
 function queryFromLocation() { const params=new URLSearchParams(window.location.search); return params.get("selection") === "all" ? "selection=all" : `session=${encodeURIComponent(params.get("session") || "")}`; }
 
 function boot() {
-  let lastBundle=null; let focusedSessionId=null; let originSessionId=null; let scrollY=0; let controller; const openProjects=new Set();
+  let lastBundle=null; let focusedSessionId=null; let originSessionId=null; let selectedNodeId=null; let focusEntryPending=false; let scrollY=0; let controller; const openProjects=new Set();
   const setConnection=(state) => { const messages={connected:"LOCAL / CONNECTED", connecting:"LOCAL / CONNECTING", reconnecting:"LOCAL / RECONNECTING", degraded:"LOCAL / DEGRADED"}; byId("connection").dataset.state=state; byId("connection-text").textContent=messages[state] || messages.connecting; };
-  const render=() => { const focused=focusedSessionId ? findSnapshot(lastBundle, focusedSessionId) : null; if (focusedSessionId && !focused) focusedSessionId=null; if (focused) renderFocused(focused, () => { focusedSessionId=null; renderAll(lastBundle, chooseFocus, new Date(), {openProjects}); const origin=document.querySelector(`[data-session="${CSS.escape(originSessionId || "")}"]`); origin?.focus(); window.scrollTo(0,scrollY); }); else renderAll(lastBundle || {projects:[]}, chooseFocus, new Date(), {openProjects}); };
-  const chooseFocus=(snapshot) => { scrollY=window.scrollY; originSessionId=safeText(snapshot.session_id); focusedSessionId=originSessionId; render(); };
-  const transport=createTransport({EventSourceImpl:globalThis.EventSource, fetchImpl:globalThis.fetch?.bind(globalThis), onBundle:(bundle,meta) => controller?.acceptStreamSnapshot(meta.generation,bundle), onConnection:setConnection, onElapsed:() => updateElapsed(document,new Date()), onInitialFailure:(generation) => controller?.initialStreamFailed(generation)});
+  const render=() => { const focused=focusedSessionId ? findSnapshot(lastBundle, focusedSessionId) : null; if (focusedSessionId && !focused) { focusedSessionId=null; selectedNodeId=null; focusEntryPending=false; } if (focused) { const focusBack=focusEntryPending; renderFocused(focused, () => { focusedSessionId=null; selectedNodeId=null; focusEntryPending=false; renderAll(lastBundle, chooseFocus, new Date(), {openProjects}); const origin=document.querySelector(`[data-session="${CSS.escape(originSessionId || "")}"]`); origin?.focus(); window.scrollTo(0,scrollY); }, {focusBack, selectedNodeId, onNodeSelected:(nodeId) => { selectedNodeId=nodeId; }}); focusEntryPending=false; } else renderAll(lastBundle || {projects:[]}, chooseFocus, new Date(), {openProjects}); };
+  const chooseFocus=(snapshot) => { scrollY=window.scrollY; originSessionId=safeText(snapshot.session_id); selectedNodeId=null; focusEntryPending=true; focusedSessionId=originSessionId; render(); };
+  const transport=createTransport({EventSourceImpl:globalThis.EventSource, fetchImpl:globalThis.fetch?.bind(globalThis), onBundle:(bundle,meta) => meta.source === "sse" ? controller?.acceptStreamSnapshot(meta.generation,bundle) : controller?.acceptPollSnapshot(meta.generation,bundle), onConnection:setConnection, onElapsed:() => updateElapsed(document,new Date()), onInitialFailure:(generation) => controller?.initialStreamFailed(generation)});
   controller=createSelectionController({fetchImpl:globalThis.fetch?.bind(globalThis), transport, apply:(bundle) => { lastBundle=bundle; render(); }, sync:(query) => { const url=`${window.location.pathname}?${query}`; window.history.replaceState({}, "", url); byId("session-selector").value=query; }, refreshCatalog:(catalog,query) => populateSelector(catalog,query), onError:(message) => { byId("selection-error").textContent=message; }, clearError:() => { byId("selection-error").textContent=""; }});
   byId("session-selector").addEventListener("change", (event) => controller.select(event.target.value));
   const initial=queryFromLocation(); fetch(`/api/snapshot?${initial}`).then((response) => response.ok ? response.json() : Promise.reject()).then((bundle) => controller.seed(initial,bundle)).catch(() => { setConnection("reconnecting"); render(); });

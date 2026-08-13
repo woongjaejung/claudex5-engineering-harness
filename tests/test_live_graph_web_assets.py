@@ -128,11 +128,57 @@ class WebDashboardAssetTests(unittest.TestCase):
           Source=Recovered; const retry=jobs.find((job)=>job.delay===5000 && !job.cleared); retry.fn(); globalThis.recovered.listeners.snapshot({data:JSON.stringify({revision:'fresh'})});
           console.log(JSON.stringify({attempts, applied, delays:jobs.map((job)=>job.delay), streams:transport.state().activeStreams, polling:transport.state().fallbackPolling}));
         """)
-        self.assertEqual(len(rendered["attempts"]), 1)
+        self.assertEqual(len(rendered["attempts"]), 2)
         self.assertEqual(rendered["applied"], [["fresh", 2]])
         self.assertIn(5000, rendered["delays"])
         self.assertEqual(rendered["streams"], 1)
         self.assertFalse(rendered["polling"])
+
+    def test_selection_switch_aborts_hung_poll_and_starts_current_poll_immediately(self) -> None:
+        rendered = run_app_script("""
+          const {createTransport}=await import(process.env.APP_URL); const jobs=[]; let serial=0; const attempts=[]; let abortedA=false; let inFlight=0; let maxInFlight=0;
+          const timers={setTimeout(fn,delay){const job={id:++serial,fn,delay,cleared:false};jobs.push(job);return job.id},clearTimeout(id){const job=jobs.find((x)=>x.id===id);if(job)job.cleared=true}};
+          const fetchImpl=(url,{signal}={})=>new Promise((resolve,reject)=>{attempts.push(url);inFlight++;maxInFlight=Math.max(maxInFlight,inFlight);signal?.addEventListener('abort',()=>{abortedA=url.includes('session=a');inFlight--;reject(new DOMException('aborted','AbortError'))},{once:true})});
+          function Offline(){throw new Error('offline')}
+          const transport=createTransport({EventSourceImpl:Offline,fetchImpl,timers,onBundle:()=>{},onConnection:()=>{},onElapsed:()=>{}});
+          transport.open('session=a',1); transport.open('session=b',2); await Promise.resolve(); await Promise.resolve();
+          console.log(JSON.stringify({attempts,abortedA,inFlight,maxInFlight,state:transport.state()}));
+        """)
+        self.assertEqual(rendered["attempts"], ["/api/snapshot?session=a", "/api/snapshot?session=b"])
+        self.assertTrue(rendered["abortedA"])
+        self.assertEqual(rendered["inFlight"], 1)
+        self.assertEqual(rendered["maxInFlight"], 1)
+
+    def test_candidate_poll_snapshot_keeps_rollback_window_until_sse_snapshot(self) -> None:
+        rendered = run_app_script("""
+          const {createSelectionController}=await import(process.env.APP_URL); const resolvers=[]; const events=[]; const catalogs=[];
+          const fetchImpl=()=>new Promise((resolve)=>resolvers.push(resolve)); const transport={open:(q,g)=>events.push(['open',q,g]),close:()=>events.push(['close'])};
+          const controller=createSelectionController({fetchImpl,transport,apply:(bundle)=>events.push(['apply',bundle.revision]),refreshCatalog:(rows)=>catalogs.push(rows.map((row)=>row.session_id))});
+          controller.seed('session=a',{revision:'A',catalog:[{session_id:'a'}],projects:[]});
+          const select=controller.select('session=b'); resolvers[0]({ok:true,json:async()=>({revision:'B0',catalog:[{session_id:'b'}],projects:[]})}); await select;
+          controller.acceptPollSnapshot(2,{revision:'B1',catalog:[{session_id:'b'},{session_id:'live'}],projects:[]});
+          const beforeFailure=controller.state(); controller.initialStreamFailed(2); resolvers[1]({ok:false,status:404}); await Promise.resolve(); await Promise.resolve();
+          console.log(JSON.stringify({beforeFailure,state:controller.state(),catalogs,events}));
+        """)
+        self.assertTrue(rendered["beforeFailure"]["candidateAwaitingFirstSnapshot"])
+        self.assertEqual(rendered["beforeFailure"]["bundle"]["revision"], "B1")
+        self.assertEqual(rendered["state"]["query"], "session=a")
+        self.assertEqual(rendered["state"]["bundle"]["revision"], "A")
+        self.assertEqual(rendered["catalogs"][-1], ["a"])
+
+    def test_focused_update_preserves_node_focus_and_detail_without_refocusing_back(self) -> None:
+        rendered = run_app_script("""
+          const app=await import(process.env.APP_URL);
+          class Element { constructor(tag='div'){this.tagName=tag;this.children=[];this.attributes={};this.dataset={};this.listeners={};this.classList={add(){},remove(){}};this.focusCount=0;this.hidden=false;this.textContent=''} append(...items){this.children.push(...items)} replaceChildren(...items){this.children=items} setAttribute(key,value){this.attributes[key]=String(value);if(key.startsWith('data-'))this.dataset[key.slice(5).replace(/-([a-z])/g,(_,c)=>c.toUpperCase())]=String(value)} addEventListener(name,fn){this.listeners[name]=fn} focus(){this.focusCount++;globalThis.document.activeElement=this} querySelectorAll(){const all=[];const visit=(node)=>{for(const child of node.children){all.push(child);visit(child)}};visit(this);return all} }
+          const ids=new Map(['all-view','focused-view','focus-title','focus-path','node-detail','graph','back-button'].map((id)=>[id,new Element()])); globalThis.document={getElementById:(id)=>ids.get(id),createElement:(tag)=>new Element(tag),createElementNS:(_ns,tag)=>new Element(tag),activeElement:null};
+          const node={id:'task:n',label:'Full task detail',description:'Keep selected detail',state:'running',started_at:'2026-08-14T10:00:00Z'}; const snapshot={session_id:'a',title:'A',nodes:{'task:n':node},edges:[]}; let selected='';
+          app.renderFocused(snapshot,()=>{}, {focusBack:true,onNodeSelected:(value)=>selected=value}); const first=ids.get('graph').children.find((entry)=>entry.dataset.nodeId==='task:n'); first.listeners.click(); first.focus();
+          app.renderFocused(snapshot,()=>{}, {focusBack:false,selectedNodeId:selected,onNodeSelected:(value)=>selected=value});
+          console.log(JSON.stringify({backFocus:ids.get('back-button').focusCount,active:globalThis.document.activeElement?.dataset.nodeId,detail:ids.get('node-detail').children.map((entry)=>entry.textContent)}));
+        """)
+        self.assertEqual(rendered["backFocus"], 1)
+        self.assertEqual(rendered["active"], "task:n")
+        self.assertEqual(rendered["detail"], ["Full task detail", "Keep selected detail"])
 
     def test_transport_rejects_poll_after_json_decode_and_closed_stream_callbacks(self) -> None:
         rendered = run_app_script("""
