@@ -29,6 +29,16 @@ done
 target_home="$(claudex5_validate_home "$target_home")"
 [[ ! -L "$target_home/.claude" ]] || claudex5_die "refusing symlinked configuration directory: $target_home/.claude"
 [[ ! -L "$target_home/.codex" ]] || claudex5_die "refusing symlinked configuration directory: $target_home/.codex"
+for managed_path in \
+  "$target_home/.local/bin" \
+  "$target_home/.local/state/claudex5-engineering-harness" \
+  "$target_home/.claude/agents" \
+  "$target_home/.claude/hooks" \
+  "$target_home/.claude/skills/claudex5-subagent-routing" \
+  "$target_home/.claude/statuslines" \
+  "$target_home/.codex/agents"; do
+  claudex5_assert_no_symlink_components "$target_home" "$managed_path"
+done
 
 if [[ "$bootstrap" -eq 1 ]]; then
   "$repo_root/bootstrap-system.sh"
@@ -85,10 +95,15 @@ cleanup() {
     claudex5_restore_backup "$target_home" "$backup_dir" "$expected_state_file"
     if [[ -f "$created_links_file" ]]; then
       while IFS=$'\t' read -r action link_path link_target; do
+        if ! (claudex5_assert_no_symlink_components "$target_home" "$(dirname "$link_path")"); then
+          claudex5_warn "managed link path changed during rollback; skipped: $link_path"
+          continue
+        fi
         if [[ "$action" == "created" && -L "$link_path" && \
               "$(readlink "$link_path")" == "$link_target" ]]; then
           rm -f "$link_path"
         elif [[ "$action" == "removed" && ! -e "$link_path" && ! -L "$link_path" ]]; then
+          claudex5_assert_no_symlink_components "$target_home" "$(dirname "$link_path")"
           mkdir -p "$(dirname "$link_path")"
           ln -s "$link_target" "$link_path"
         fi

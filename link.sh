@@ -75,9 +75,22 @@ elif [[ -L "$spark_destination" && "$(readlink "$spark_destination")" == "$spark
   remove_managed_spark=1
 fi
 
+managed_directories=(
+  "$target_home/.local/bin"
+  "$target_home/.claude/agents"
+  "$target_home/.claude/hooks"
+  "$target_home/.claude/skills/claudex5-subagent-routing"
+  "$target_home/.claude/statuslines"
+  "$target_home/.codex/agents"
+)
+for managed_directory in "${managed_directories[@]}"; do
+  claudex5_assert_no_symlink_components "$target_home" "$managed_directory"
+done
+
 for index in "${!sources[@]}"; do
   source_path="${sources[$index]}"
   destination="${destinations[$index]}"
+  claudex5_assert_no_symlink_components "$target_home" "$(dirname "$destination")"
   [[ -f "$source_path" ]] || claudex5_die "missing repository file: $source_path"
   if [[ -L "$destination" ]]; then
     [[ "$(readlink "$destination")" == "$source_path" ]] || \
@@ -88,21 +101,21 @@ for index in "${!sources[@]}"; do
 done
 
 if [[ "$remove_managed_spark" -eq 1 ]]; then
+  claudex5_assert_no_symlink_components "$target_home" "$(dirname "$spark_destination")"
   rm -f "$spark_destination"
   [[ -n "$journal" ]] && printf 'removed\t%s\t%s\n' "$spark_destination" "$spark_source" >> "$journal"
   printf 'REMOVED\t%s\n' "$spark_destination"
 fi
 
-mkdir -p \
-  "$target_home/.local/bin" \
-  "$target_home/.claude/agents" \
-  "$target_home/.claude/hooks" \
-  "$target_home/.claude/skills/claudex5-subagent-routing" \
-  "$target_home/.claude/statuslines" \
-  "$target_home/.codex/agents"
+for managed_directory in "${managed_directories[@]}"; do
+  claudex5_assert_no_symlink_components "$target_home" "$managed_directory"
+  mkdir -p "$managed_directory"
+  claudex5_assert_no_symlink_components "$target_home" "$managed_directory"
+done
 for index in "${!sources[@]}"; do
   source_path="${sources[$index]}"
   destination="${destinations[$index]}"
+  claudex5_assert_no_symlink_components "$target_home" "$(dirname "$destination")"
   if [[ ! -L "$destination" ]]; then
     ln -s "$source_path" "$destination"
     [[ -n "$journal" ]] && printf 'created\t%s\t%s\n' "$destination" "$source_path" >> "$journal"

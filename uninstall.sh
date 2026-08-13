@@ -23,6 +23,16 @@ done
 target_home="$(claudex5_validate_home "$target_home")"
 [[ ! -L "$target_home/.claude" ]] || claudex5_die "refusing symlinked configuration directory: $target_home/.claude"
 [[ ! -L "$target_home/.codex" ]] || claudex5_die "refusing symlinked configuration directory: $target_home/.codex"
+for managed_path in \
+  "$target_home/.local/bin" \
+  "$target_home/.local/state/claudex5-engineering-harness" \
+  "$target_home/.claude/agents" \
+  "$target_home/.claude/hooks" \
+  "$target_home/.claude/skills/claudex5-subagent-routing" \
+  "$target_home/.claude/statuslines" \
+  "$target_home/.codex/agents"; do
+  claudex5_assert_no_symlink_components "$target_home" "$managed_path"
+done
 python_bin="$(claudex5_find_python)" || claudex5_die "Python 3.11 or newer is required"
 
 backup_dir="$(claudex5_backup_configs "$target_home")"
@@ -38,6 +48,10 @@ cleanup() {
       claudex5_restore_backup "$target_home" "$backup_dir" "$expected_state_file"
     fi
     while IFS= read -r -d '' link_path && IFS= read -r -d '' link_target; do
+      if ! (claudex5_assert_no_symlink_components "$target_home" "$(dirname "$link_path")"); then
+        claudex5_warn "managed link path changed during rollback; skipped: $link_path"
+        continue
+      fi
       if [[ ! -e "$link_path" && ! -L "$link_path" ]]; then
         mkdir -p "$(dirname "$link_path")"
         ln -s "$link_target" "$link_path"
@@ -98,6 +112,7 @@ link_destinations=(
 for index in "${!link_sources[@]}"; do
   path="${link_destinations[$index]}"
   target="${link_sources[$index]}"
+  claudex5_assert_no_symlink_components "$target_home" "$(dirname "$path")"
   [[ -L "$path" ]] || continue
   [[ "$(readlink "$path")" == "$target" ]] || continue
   if [[ "${CLAUDEX5_UNINSTALL_JOURNAL_FAIL:-0}" == "1" ]]; then

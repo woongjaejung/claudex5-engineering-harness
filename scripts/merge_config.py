@@ -90,6 +90,15 @@ CODEX_AGENT_DESCRIPTIONS = {
 }
 
 _WRITE_JOURNAL: dict[Path, str] | None = None
+_EXPECTED_STATES: dict[Path, str | None] | None = None
+
+
+def _file_digest(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    if not path.is_file():
+        raise RuntimeError(f"configuration target is not a regular file: {path}")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def parse_toml(text: str) -> dict:
@@ -116,6 +125,9 @@ def atomic_write(path: Path, text: str, mode: int | None = None) -> None:
             os.fsync(handle.fileno())
         if current_mode is not None:
             os.chmod(temporary_name, current_mode)
+        if _EXPECTED_STATES is not None and path in _EXPECTED_STATES:
+            if _file_digest(path) != _EXPECTED_STATES[path]:
+                raise RuntimeError(f"configuration changed concurrently: {path}")
         if _WRITE_JOURNAL is not None:
             _WRITE_JOURNAL[path] = hashlib.sha256(text.encode("utf-8")).hexdigest()
         os.replace(temporary_name, path)
@@ -364,7 +376,7 @@ def _config_state_text(
 
 
 def remove_harness_config(home: Path, state_file: Path | None = None) -> None:
-    global _WRITE_JOURNAL
+    global _EXPECTED_STATES, _WRITE_JOURNAL
     claude_md = home / ".claude" / "CLAUDE.md"
     codex_md = home / ".codex" / "AGENTS.md"
     settings_path = home / ".claude" / "settings.json"
@@ -375,6 +387,10 @@ def remove_harness_config(home: Path, state_file: Path | None = None) -> None:
         for path in targets
     }
     write_journal: dict[Path, str] = {}
+    _EXPECTED_STATES = {
+        path: hashlib.sha256(original[0]).hexdigest() if original is not None else None
+        for path, original in originals.items()
+    }
     _WRITE_JOURNAL = write_journal
     try:
         for path in (claude_md, codex_md):
@@ -423,6 +439,7 @@ def remove_harness_config(home: Path, state_file: Path | None = None) -> None:
         if state_file is not None:
             atomic_write(state_file, _config_state_text(targets, originals, write_journal), mode=0o600)
     except Exception:
+        _EXPECTED_STATES = None
         _WRITE_JOURNAL = None
         for path, original in originals.items():
             expected_digest = write_journal.get(path)
@@ -437,6 +454,7 @@ def remove_harness_config(home: Path, state_file: Path | None = None) -> None:
                 atomic_write(path, data.decode("utf-8"), mode=mode)
         raise
     finally:
+        _EXPECTED_STATES = None
         _WRITE_JOURNAL = None
 
 
@@ -448,7 +466,7 @@ def install_from_repository(
     enable_task_created: bool = False,
     enable_task_completed: bool = False,
 ) -> list[str]:
-    global _WRITE_JOURNAL
+    global _EXPECTED_STATES, _WRITE_JOURNAL
     targets = (
         home / ".claude" / "CLAUDE.md",
         home / ".codex" / "AGENTS.md",
@@ -461,6 +479,10 @@ def install_from_repository(
     }
     warnings: list[str] = []
     write_journal: dict[Path, str] = {}
+    _EXPECTED_STATES = {
+        path: hashlib.sha256(original[0]).hexdigest() if original is not None else None
+        for path, original in originals.items()
+    }
     _WRITE_JOURNAL = write_journal
     try:
         merge_instruction_file(
@@ -486,6 +508,7 @@ def install_from_repository(
             )
         )
     except Exception:
+        _EXPECTED_STATES = None
         for path, original in originals.items():
             expected_digest = write_journal.get(path)
             if expected_digest is None:
@@ -499,6 +522,7 @@ def install_from_repository(
                 atomic_write(path, data.decode("utf-8"), mode=mode)
         raise
     finally:
+        _EXPECTED_STATES = None
         _WRITE_JOURNAL = None
     return warnings
 

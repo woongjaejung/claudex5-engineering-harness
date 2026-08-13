@@ -296,6 +296,42 @@ class ClaudeSettingsTests(unittest.TestCase):
                     remove_harness_config(home, state_file)
             self.assertEqual(claude_md.read_bytes(), original)
 
+    def test_install_aborts_without_overwriting_concurrent_foreign_setting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / ".claude").mkdir()
+            (home / ".codex").mkdir()
+            settings_path = home / ".claude" / "settings.json"
+            settings_path.write_text('{"foreign":"before"}\n', encoding="utf-8")
+            (home / ".codex" / "config.toml").write_text("", encoding="utf-8")
+            real_atomic_write = merge_config_module.atomic_write
+            changed = False
+
+            def inject_concurrent_edit(path, text, mode=None):
+                nonlocal changed
+                if path == settings_path and not changed:
+                    settings_path.write_text('{"foreign":"concurrent"}\n', encoding="utf-8")
+                    changed = True
+                return real_atomic_write(path, text, mode)
+
+            with unittest.mock.patch.object(
+                merge_config_module, "atomic_write", side_effect=inject_concurrent_edit
+            ):
+                with self.assertRaisesRegex(RuntimeError, "configuration changed concurrently"):
+                    merge_config_module.install_from_repository(
+                        home,
+                        Path(__file__).resolve().parents[1],
+                        harden=False,
+                    )
+
+            self.assertTrue(changed)
+            self.assertEqual(
+                json.loads(settings_path.read_text(encoding="utf-8")),
+                {"foreign": "concurrent"},
+            )
+            self.assertFalse((home / ".claude" / "CLAUDE.md").exists())
+            self.assertFalse((home / ".codex" / "AGENTS.md").exists())
+
     def test_uninstall_state_uses_committed_payload_not_concurrent_edit(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)

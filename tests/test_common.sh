@@ -47,6 +47,11 @@ if claudex5_version_at_least "2.1.83" "2.1.84"; then
 fi
 claudex5_version_at_least "2.1.84" "2.1.84"
 claudex5_version_at_least "2.2.0" "2.1.84"
+claudex5_version_at_least "999999999999999999999999999999999999.1.0" "2.1.84"
+if claudex5_version_at_least "1.999999999999999999999999999999999999.0" "2.1.84"; then
+  printf '%s\n' "an oversized minor component must not override a smaller major version" >&2
+  exit 1
+fi
 
 cat > "$fake_root/bin/claude" <<'EOF'
 #!/usr/bin/env bash

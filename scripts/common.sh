@@ -23,6 +23,30 @@ claudex5_validate_home() {
   printf '%s\n' "$canonical"
 }
 
+claudex5_assert_no_symlink_components() {
+  local target_home="$1"
+  local candidate="$2"
+  local relative current part
+  case "$candidate" in
+    "$target_home") return 0 ;;
+    "$target_home"/*) relative="${candidate#"$target_home"/}" ;;
+    *) claudex5_die "managed path escaped target home: $candidate" ;;
+  esac
+  current="$target_home"
+  while [[ -n "$relative" ]]; do
+    part="${relative%%/*}"
+    [[ -n "$part" && "$part" != "." && "$part" != ".." ]] || \
+      claudex5_die "invalid managed path component: $candidate"
+    current="$current/$part"
+    [[ ! -L "$current" ]] || claudex5_die "refusing symbolic link in managed path: $current"
+    if [[ "$relative" == */* ]]; then
+      relative="${relative#*/}"
+    else
+      relative=""
+    fi
+  done
+}
+
 claudex5_find_python() {
   local candidate
   for candidate in \
@@ -63,12 +87,36 @@ claudex5_version_at_least() {
   required_minor="${BASH_REMATCH[2]}"
   required_patch="${BASH_REMATCH[3]}"
 
-  if (( 10#$actual_major != 10#$required_major )); then
-    (( 10#$actual_major > 10#$required_major ))
-  elif (( 10#$actual_minor != 10#$required_minor )); then
-    (( 10#$actual_minor > 10#$required_minor ))
+  local actual_part required_part comparison
+  for actual_part in "$actual_major" "$actual_minor" "$actual_patch"; do
+    case "$actual_part" in *[!0-9]*) return 1 ;; esac
+  done
+  for required_part in "$required_major" "$required_minor" "$required_patch"; do
+    case "$required_part" in *[!0-9]*) return 1 ;; esac
+  done
+  for comparison in \
+    "$(claudex5_compare_decimal "$actual_major" "$required_major")" \
+    "$(claudex5_compare_decimal "$actual_minor" "$required_minor")" \
+    "$(claudex5_compare_decimal "$actual_patch" "$required_patch")"; do
+    [[ "$comparison" == "0" ]] || { [[ "$comparison" == "1" ]]; return; }
+  done
+  return 0
+}
+
+claudex5_compare_decimal() {
+  local left right
+  left="$(printf '%s' "$1" | sed 's/^0*//; s/^$/0/')"
+  right="$(printf '%s' "$2" | sed 's/^0*//; s/^$/0/')"
+  if (( ${#left} > ${#right} )); then
+    printf '%s\n' 1
+  elif (( ${#left} < ${#right} )); then
+    printf '%s\n' -1
+  elif [[ "$left" == "$right" ]]; then
+    printf '%s\n' 0
+  elif [[ "$left" > "$right" ]]; then
+    printf '%s\n' 1
   else
-    (( 10#$actual_patch >= 10#$required_patch ))
+    printf '%s\n' -1
   fi
 }
 
@@ -124,6 +172,7 @@ claudex5_backup_configs() {
   chmod 600 "$backup_dir/manifest.tsv"
   for relative in .claude/settings.json .claude/CLAUDE.md .codex/config.toml .codex/AGENTS.md; do
     source="$target_home/$relative"
+    claudex5_assert_no_symlink_components "$target_home" "$source"
     if [[ -f "$source" ]]; then
       mkdir -p "$backup_dir/$(dirname "$relative")"
       cp -p "$source" "$backup_dir/$relative"
@@ -151,6 +200,10 @@ claudex5_restore_backup() {
         claudex5_warn "configuration changed during installation; automatic rollback skipped: $target_home/$relative"
         continue
       fi
+    fi
+    if ! (claudex5_assert_no_symlink_components "$target_home" "$target_home/$relative"); then
+      claudex5_warn "managed path changed during rollback; automatic restore skipped: $target_home/$relative"
+      continue
     fi
     if [[ "$state" == "present" ]]; then
       mkdir -p "$target_home/$(dirname "$relative")"

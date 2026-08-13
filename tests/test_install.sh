@@ -270,6 +270,39 @@ if CLAUDEX5_PYTHON="$python_bin" CLAUDEX5_SKIP_PLUGIN=1 \
   exit 1
 fi
 
+nested_symlink_home="$test_root/nested-symlink-home"
+nested_external="$test_root/nested-external"
+mkdir -p "$nested_symlink_home/.claude" "$nested_symlink_home/.codex" "$nested_external"
+ln -s "$nested_external" "$nested_symlink_home/.claude/hooks"
+if "$repo_root/link.sh" --home "$nested_symlink_home" >/dev/null 2>&1; then
+  printf '%s\n' "linker must reject a nested managed-directory symlink" >&2
+  exit 1
+fi
+if CLAUDEX5_PYTHON="$python_bin" CLAUDEX5_SKIP_PLUGIN=1 \
+  "$repo_root/install.sh" --home "$nested_symlink_home" --skip-runtime-check >/dev/null 2>&1; then
+  printf '%s\n' "installer must reject a nested managed-directory symlink" >&2
+  exit 1
+fi
+[[ ! -e "$nested_external/claudex5-live-graph.py" ]]
+
+uninstall_symlink_home="$test_root/uninstall-symlink-home"
+uninstall_external="$test_root/uninstall-external"
+mkdir -p "$uninstall_symlink_home/.claude" "$uninstall_symlink_home/.codex" "$uninstall_external"
+printf '%s\n' '{}' > "$uninstall_symlink_home/.claude/settings.json"
+printf '%s\n' '' > "$uninstall_symlink_home/.codex/config.toml"
+CLAUDEX5_PYTHON="$python_bin" CLAUDEX5_SKIP_PLUGIN=1 \
+  "$repo_root/install.sh" --home "$uninstall_symlink_home" --skip-runtime-check >/dev/null
+mv "$uninstall_symlink_home/.claude/hooks" "$uninstall_symlink_home/.claude/hooks-real"
+ln -s "$repo_root/claude/hooks/claudex5-live-graph.py" "$uninstall_external/claudex5-live-graph.py"
+ln -s "$uninstall_external" "$uninstall_symlink_home/.claude/hooks"
+if CLAUDEX5_PYTHON="$python_bin" \
+  "$repo_root/uninstall.sh" --home "$uninstall_symlink_home" >/dev/null 2>&1; then
+  printf '%s\n' "uninstaller must reject a nested managed-directory symlink" >&2
+  exit 1
+fi
+[[ -L "$uninstall_external/claudex5-live-graph.py" ]]
+grep -q 'BEGIN CLAUDEX5' "$uninstall_symlink_home/.claude/CLAUDE.md"
+
 rollback_home="$test_root/rollback-home"
 mkdir -p "$rollback_home/.claude" "$rollback_home/.codex"
 printf '%s\n' "before rollback" > "$rollback_home/.claude/CLAUDE.md"
