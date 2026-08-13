@@ -206,6 +206,41 @@ class StateStoreTests(unittest.TestCase):
                 blocked_store.append("session-1", "checkpoint", "session:session-1", {})
         self.assertEqual((run_dir / "events.jsonl").read_bytes(), before)
 
+    def test_descriptions_are_bounded_and_secrets_are_redacted(self) -> None:
+        long_description = "x" * 200
+        event = self.store.append(
+            "session-1", "task.created", "task:description",
+            {"label": "Description", "description": long_description},
+        )
+        redacted = self.store.append(
+            "session-1", "node.updated", "task:description",
+            {"description": "Bearer abcdefghijklmnopqrstuvwxyz012345"},
+        )
+
+        self.assertEqual(event["payload"]["description"], "x" * 160)
+        self.assertEqual(redacted["payload"]["description"], "[REDACTED]")
+        persisted = (self.root / "session-1" / "events.jsonl").read_text(encoding="utf-8")
+        self.assertIn('"description":"[REDACTED]"', persisted)
+
+    def test_non_string_text_fields_are_rejected_before_persistence(self) -> None:
+        self.start()
+        events_path = self.root / "session-1" / "events.jsonl"
+        before = events_path.read_bytes()
+
+        for key in ("label", "title", "session_title", "description"):
+            for value in ({"nested": "value"}, ["nested", "value"]):
+                with self.subTest(key=key, value=value):
+                    with self.assertRaisesRegex(ValueError, "^invalid event text field$"):
+                        self.store.append("session-1", "node.updated", "task:one", {key: value})
+
+        self.assertEqual(events_path.read_bytes(), before)
+        private_state = "".join(
+            path.read_text(encoding="utf-8")
+            for path in (self.root / "session-1").iterdir()
+            if path.is_file() and path.name != ".lock"
+        )
+        self.assertNotIn("nested", private_state)
+
     def test_clear_all_removes_runs_but_keeps_private_root(self) -> None:
         self.start("one")
         self.start("two")

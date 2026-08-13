@@ -212,10 +212,15 @@ class StateStore:
             payload = {}
         if not isinstance(payload, dict):
             raise ValueError("event payload must be an object")
+        for key in ("label", "title", "session_title", "description"):
+            if key in payload and not isinstance(payload[key], str):
+                raise ValueError("invalid event text field")
         safe_payload = copy.deepcopy(payload)
-        for key in ("label", "title", "role", "model", "effort"):
+        for key in ("label", "title", "session_title", "role", "model", "effort"):
             if key in safe_payload:
                 safe_payload[key] = sanitize_label(safe_payload[key])
+        if "description" in safe_payload:
+            safe_payload["description"] = sanitize_label(safe_payload["description"], limit=160)
         if event_type == "session.started":
             safe_payload["cwd"] = _canonical_cwd(safe_payload.get("cwd"))
         run_dir = self._run_dir(session_id, create=True)
