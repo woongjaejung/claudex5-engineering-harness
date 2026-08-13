@@ -23,6 +23,7 @@ import stat
 import sys
 
 from scripts.live_graph.store import StateStore
+from scripts.live_graph.sessions import SessionSelection
 from scripts.live_graph.web import create_server
 
 root = Path(sys.argv[1]) / "private-state" / "runs"
@@ -49,7 +50,7 @@ persisted = b"\n".join(path.read_bytes() for path in root.rglob("*") if path.is_
 assert b"z" * 40 not in persisted
 assert b"[REDACTED]" in persisted
 try:
-    create_server(store, host="0.0.0.0", port=0)
+    create_server(store, SessionSelection.all(), host="0.0.0.0", port=0)
 except ValueError:
     pass
 else:
