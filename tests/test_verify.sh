@@ -110,7 +110,7 @@ printf '%s\n' '' > "$version_home/.codex/config.toml"
   --enable-task-completed --enable-task-created
 cat > "$fake_bin/claude" <<'EOF'
 #!/usr/bin/env bash
-[[ "${1:-}" == "--version" ]] && printf '%s\n' '2.1.84' || exit 1
+[[ "${1:-}" == "--version" ]] && printf '%s\n' "${FAKE_CLAUDE_VERSION:-2.1.84}" || exit 1
 EOF
 chmod +x "$fake_bin/claude"
 PATH="$fake_bin:$PATH" "$repo_root/verify.sh" --home "$version_home" --repo "$repo_root" --structural-only >/dev/null
@@ -126,6 +126,13 @@ path.write_text(json.dumps(settings))
 PY
 if PATH="$fake_bin:$PATH" "$repo_root/verify.sh" --home "$version_home" --repo "$repo_root" --structural-only >/dev/null 2>&1; then
   printf '%s\n' "supported Claude version must fail when TaskCreated hook is missing" >&2
+  exit 1
+fi
+"$python_bin" "$repo_root/scripts/merge_config.py" install --home "$version_home" --repo "$repo_root" \
+  --enable-task-completed --enable-task-created
+if PATH="$fake_bin:$PATH" FAKE_CLAUDE_VERSION=2.1.32 \
+  "$repo_root/verify.sh" --home "$version_home" --repo "$repo_root" --structural-only >/dev/null 2>&1; then
+  printf '%s\n' "old Claude version must reject orphan official task hooks" >&2
   exit 1
 fi
 

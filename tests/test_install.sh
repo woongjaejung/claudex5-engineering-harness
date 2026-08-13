@@ -154,6 +154,18 @@ fi
 [[ -L "$atomic_uninstall_home/.claude/hooks/claudex5-live-graph.py" ]]
 grep -q 'private history remains untouched' "$atomic_uninstall_home/.local/state/claudex5-engineering-harness/runs/history.jsonl"
 
+exact_link_home="$test_root/exact-link-home"
+mkdir -p "$exact_link_home/.claude/agents" "$exact_link_home/.claude/hooks" "$exact_link_home/.claude" \
+  "$exact_link_home/.codex" "$exact_link_home/.local/bin"
+printf '%s\n' '{}' > "$exact_link_home/.claude/settings.json"
+printf '%s\n' '' > "$exact_link_home/.codex/config.toml"
+"$python_bin" "$repo_root/scripts/merge_config.py" install --home "$exact_link_home" --repo "$repo_root"
+ln -s "$repo_root/claude/agents/harness-orchestrator.md" "$exact_link_home/.claude/agents/harness-custom.md"
+ln -s "$repo_root/claude/agents/harness-researcher.md" "$exact_link_home/.claude/agents/harness-orchestrator.md"
+CLAUDEX5_PYTHON="$python_bin" "$repo_root/uninstall.sh" --home "$exact_link_home" >/dev/null
+[[ -L "$exact_link_home/.claude/agents/harness-custom.md" ]]
+[[ -L "$exact_link_home/.claude/agents/harness-orchestrator.md" ]]
+
 CLAUDEX5_PYTHON="$python_bin" "$repo_root/uninstall.sh" --home "$test_home"
 [[ ! -e "$test_home/.claude/agents/harness-orchestrator.md" ]]
 [[ ! -e "$test_home/.claude/skills/claudex5-subagent-routing/SKILL.md" ]]
@@ -319,6 +331,24 @@ case "${1:-}" in
 esac
 EOF
 chmod +x "$fake_bin/claude" "$fake_bin/codex"
+
+unknown_version_home="$test_root/unknown-version-home"
+unknown_version_log="$test_root/unknown-version.log"
+mkdir -p "$unknown_version_home/.claude" "$unknown_version_home/.codex"
+printf '%s\n' '{}' > "$unknown_version_home/.claude/settings.json"
+printf '%s\n' '' > "$unknown_version_home/.codex/config.toml"
+PATH="$fake_bin:$PATH" FAKE_CLAUDE_VERSION='2.1.84-beta.1' CLAUDEX5_PYTHON="$python_bin" \
+  CLAUDEX5_SKIP_PLUGIN=1 "$repo_root/install.sh" --home "$unknown_version_home" --skip-runtime-check \
+  >"$unknown_version_log" 2>&1
+[[ "$(grep -c 'Claude Code version is unavailable or unsupported' "$unknown_version_log")" -eq 1 ]]
+"$python_bin" - "$unknown_version_home" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+hooks = json.loads((Path(sys.argv[1]) / ".claude/settings.json").read_text())["hooks"]
+assert "TaskCreated" not in hooks and "TaskCompleted" not in hooks
+PY
 
 for version in 2.1.32 2.1.33 2.1.84 2.1.226; do
   version_home="$test_root/version-$version"

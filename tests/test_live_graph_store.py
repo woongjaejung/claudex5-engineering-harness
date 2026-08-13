@@ -214,7 +214,7 @@ class StateStoreTests(unittest.TestCase):
         )
         redacted = self.store.append(
             "session-1", "node.updated", "task:description",
-            {"description": "Bearer abcdefghijklmnopqrstuvwxyz012345"},
+            {"description": "Bearer " + "abcdefghijklmnopqrstuvwxyz012345"},
         )
 
         self.assertEqual(event["payload"]["description"], "x" * 160)

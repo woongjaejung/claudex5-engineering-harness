@@ -271,6 +271,30 @@ class ClaudeSettingsTests(unittest.TestCase):
             self.assertGreaterEqual(calls, 3)
             self.assertEqual({path: path.read_bytes() for path in targets}, originals)
 
+    def test_uninstall_rolls_back_if_post_removal_state_cannot_be_published(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / ".claude").mkdir()
+            (home / ".codex").mkdir()
+            claude_md = home / ".claude" / "CLAUDE.md"
+            claude_md.write_text(f"before\n{START_MARKER}\nmanaged\n{END_MARKER}\n")
+            (home / ".claude" / "settings.json").write_text("{}\n")
+            state_file = home / "state.tsv"
+            original = claude_md.read_bytes()
+            real_atomic_write = merge_config_module.atomic_write
+
+            def fail_state_publish(path, text, mode=None):
+                if path == state_file:
+                    raise OSError("injected state publication failure")
+                return real_atomic_write(path, text, mode)
+
+            with unittest.mock.patch.object(
+                merge_config_module, "atomic_write", side_effect=fail_state_publish
+            ):
+                with self.assertRaisesRegex(OSError, "state publication"):
+                    remove_harness_config(home, state_file)
+            self.assertEqual(claude_md.read_bytes(), original)
+
 
 class CodexConfigTests(unittest.TestCase):
     def test_merge_preserves_existing_sections_and_warns_without_hardening(self):

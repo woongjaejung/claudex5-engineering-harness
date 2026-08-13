@@ -37,8 +37,7 @@ cleanup() {
     if [[ "$config_removed" -eq 1 ]]; then
       claudex5_restore_backup "$target_home" "$backup_dir" "$expected_state_file"
     fi
-    while IFS=$'\t' read -r link_path link_target; do
-      [[ -n "$link_path" ]] || continue
+    while IFS= read -r -d '' link_path && IFS= read -r -d '' link_target; do
       if [[ ! -e "$link_path" && ! -L "$link_path" ]]; then
         mkdir -p "$(dirname "$link_path")"
         ln -s "$link_target" "$link_path"
@@ -52,30 +51,64 @@ trap cleanup EXIT INT TERM
 
 # Remove settings and instruction ownership before links. The state capture
 # lets rollback restore only files that no other process changed afterwards.
-"$python_bin" "$repo_root/scripts/merge_config.py" uninstall --home "$target_home" --repo "$repo_root"
-claudex5_capture_config_state "$target_home" "$expected_state_file"
+"$python_bin" "$repo_root/scripts/merge_config.py" uninstall --home "$target_home" --repo "$repo_root" \
+  --state-file "$expected_state_file"
 config_removed=1
 removed_count=0
-for path in \
-  "$target_home/.local/bin/claudex5" \
-  "$target_home/.claude/agents"/harness-*.md \
-  "$target_home/.claude/hooks/claudex5-live-graph.py" \
-  "$target_home/.claude/skills/claudex5-subagent-routing/SKILL.md" \
-  "$target_home/.claude/statuslines/claudex5-subagent-models.py" \
-  "$target_home/.codex/agents"/harness-*.toml; do
+link_sources=(
+  "$repo_root/claude/agents/harness-orchestrator.md"
+  "$repo_root/claude/agents/harness-orchestrator-opus.md"
+  "$repo_root/claude/agents/harness-researcher.md"
+  "$repo_root/claude/agents/harness-implementer.md"
+  "$repo_root/claude/agents/harness-implementer-opus.md"
+  "$repo_root/claude/agents/harness-architecture-reviewer.md"
+  "$repo_root/claude/agents/harness-judge.md"
+  "$repo_root/claude/agents/harness-judge-opus.md"
+  "$repo_root/claude/skills/claudex5-subagent-routing/SKILL.md"
+  "$repo_root/claude/statuslines/claudex5-subagent-models.py"
+  "$repo_root/claude/hooks/claudex5-live-graph.py"
+  "$repo_root/bin/claudex5"
+  "$repo_root/codex/agents/harness-sol-research.toml"
+  "$repo_root/codex/agents/harness-sol-plan-review.toml"
+  "$repo_root/codex/agents/harness-luna-implementation.toml"
+  "$repo_root/codex/agents/harness-sol-review.toml"
+  "$repo_root/codex/agents/harness-sol-adversarial-review.toml"
+  "$repo_root/codex/agents/harness-spark-ui-iteration.toml"
+)
+link_destinations=(
+  "$target_home/.claude/agents/harness-orchestrator.md"
+  "$target_home/.claude/agents/harness-orchestrator-opus.md"
+  "$target_home/.claude/agents/harness-researcher.md"
+  "$target_home/.claude/agents/harness-implementer.md"
+  "$target_home/.claude/agents/harness-implementer-opus.md"
+  "$target_home/.claude/agents/harness-architecture-reviewer.md"
+  "$target_home/.claude/agents/harness-judge.md"
+  "$target_home/.claude/agents/harness-judge-opus.md"
+  "$target_home/.claude/skills/claudex5-subagent-routing/SKILL.md"
+  "$target_home/.claude/statuslines/claudex5-subagent-models.py"
+  "$target_home/.claude/hooks/claudex5-live-graph.py"
+  "$target_home/.local/bin/claudex5"
+  "$target_home/.codex/agents/harness-sol-research.toml"
+  "$target_home/.codex/agents/harness-sol-plan-review.toml"
+  "$target_home/.codex/agents/harness-luna-implementation.toml"
+  "$target_home/.codex/agents/harness-sol-review.toml"
+  "$target_home/.codex/agents/harness-sol-adversarial-review.toml"
+  "$target_home/.codex/agents/harness-spark-ui-iteration.toml"
+)
+for index in "${!link_sources[@]}"; do
+  path="${link_destinations[$index]}"
+  target="${link_sources[$index]}"
   [[ -L "$path" ]] || continue
-  target="$(readlink "$path")"
-  case "$target" in
-    "$repo_root"/bin/*|"$repo_root"/claude/agents/*|"$repo_root"/claude/hooks/*|"$repo_root"/claude/skills/*|"$repo_root"/claude/statuslines/*|"$repo_root"/codex/agents/*)
-      rm -f "$path"
-      printf '%s\t%s\n' "$path" "$target" >> "$removed_links_file"
-      removed_count=$((removed_count + 1))
-      if [[ "${CLAUDEX5_UNINSTALL_FAIL_AFTER_REMOVAL:-}" == "$removed_count" ]]; then
-        claudex5_die "injected uninstall link-removal failure"
-      fi
-      ;;
-    *) claudex5_warn "foreign harness-named link preserved: $path" ;;
-  esac
+  [[ "$(readlink "$path")" == "$target" ]] || continue
+  if [[ "${CLAUDEX5_UNINSTALL_JOURNAL_FAIL:-0}" == "1" ]]; then
+    claudex5_die "injected uninstall journal failure"
+  fi
+  printf '%s\0%s\0' "$path" "$target" >> "$removed_links_file"
+  rm -f "$path"
+  removed_count=$((removed_count + 1))
+  if [[ "${CLAUDEX5_UNINSTALL_FAIL_AFTER_REMOVAL:-}" == "$removed_count" ]]; then
+    claudex5_die "injected uninstall link-removal failure"
+  fi
 done
 committed=1
 trap - EXIT INT TERM

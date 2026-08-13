@@ -52,11 +52,6 @@ scan_secret_candidates() {
     local normalized
     normalized="$(mktemp)"
     LC_ALL=C tr -d '\000' < "$source_file" > "$normalized"
-    # This fixed alphabetic test fixture exercises runtime redaction; it is
-    # not credential material and must not make every installer self-check fail.
-    sed 's/Bearer abcdefghijklmnopqrstuvwxyz012345/[REDACTED]/g' "$normalized" \
-      > "$normalized.redacted"
-    mv "$normalized.redacted" "$normalized"
     if LC_ALL=C grep -Eq 'sk-(proj-|ant-[A-Za-z0-9_-]*-)?[A-Za-z0-9_-]{20,}' "$normalized"; then
       fail "SECRET-KEY: likely OpenAI/Anthropic key content in $display_path"
     fi
@@ -138,7 +133,12 @@ if claude_version="$(claudex5_claude_version)"; then
     enable_task_created=1
   fi
 else
-  warn "Claude Code version is unavailable or unsupported; official task lifecycle hooks are optional"
+  if [[ "${CLAUDEX5_SUPPRESS_VERSION_WARNING:-0}" != "1" ]]; then
+    warn "Claude Code version is unavailable or unsupported; official task lifecycle hooks are optional"
+  fi
+fi
+if [[ -n "$claude_version" && "$enable_task_created" -eq 0 && "${CLAUDEX5_SUPPRESS_VERSION_WARNING:-0}" != "1" ]]; then
+  warn "Claude Code $claude_version does not support all official task lifecycle hooks; unsupported hooks are optional"
 fi
 if [[ -n "$python_bin" ]]; then
   if "$python_bin" - "$repo_root" "$target_home" <<'PY'
@@ -202,20 +202,25 @@ from pathlib import Path
 
 settings = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 sys.path.insert(0, sys.argv[2])
-from scripts.merge_config import selected_claudex5_hook_groups
+from scripts.merge_config import CLAUDEX5_HOOK_GROUPS, selected_claudex5_hook_groups
 
 hooks = settings.get("hooks", {})
 selected = selected_claudex5_hook_groups(
     enable_task_created=sys.argv[3] == "1",
     enable_task_completed=sys.argv[4] == "1",
 )
-raise SystemExit(
-    0 if all(
+selected_ok = all(
         hooks.get(event, []).count(group) == 1
         for event, groups in selected.items()
         for group in groups
-    ) else 1
+    )
+unsupported_ok = all(
+    hooks.get(event, []).count(group) == 0
+    for event, groups in CLAUDEX5_HOOK_GROUPS.items()
+    if event not in selected
+    for group in groups
 )
+raise SystemExit(0 if selected_ok and unsupported_ok else 1)
 PY
   then
     pass "Claudex5 lifecycle hooks are installed exactly once"

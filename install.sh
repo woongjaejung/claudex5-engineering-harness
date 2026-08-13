@@ -127,7 +127,7 @@ fi
 claudex5_capture_config_state "$target_home" "$expected_state_file"
 
 if [[ -x "$repo_root/verify.sh" ]]; then
-  "$repo_root/verify.sh" --home "$target_home" --repo "$repo_root" --structural-only
+  CLAUDEX5_SUPPRESS_VERSION_WARNING=1 "$repo_root/verify.sh" --home "$target_home" --repo "$repo_root" --structural-only
 fi
 committed=1
 trap - EXIT INT TERM
@@ -135,4 +135,4 @@ rm -f "$created_links_file"
 rm -f "$expected_state_file"
 claudex5_info "installation complete"
 claudex5_info "backup: $backup_dir"
-"$repo_root/verify.sh" --home "$target_home" --repo "$repo_root"
+CLAUDEX5_SUPPRESS_VERSION_WARNING=1 "$repo_root/verify.sh" --home "$target_home" --repo "$repo_root"

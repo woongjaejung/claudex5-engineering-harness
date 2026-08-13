@@ -346,7 +346,18 @@ def harder_bool(value: bool) -> bool:
     return value
 
 
-def remove_harness_config(home: Path) -> None:
+def _config_state_text(home: Path) -> str:
+    rows = []
+    for relative in (".claude/settings.json", ".claude/CLAUDE.md", ".codex/config.toml", ".codex/AGENTS.md"):
+        path = home / relative
+        if path.is_file():
+            rows.append(f"{relative}\tpresent\t{hashlib.sha256(path.read_bytes()).hexdigest()}")
+        else:
+            rows.append(f"{relative}\tabsent\t-")
+    return "\n".join(rows) + "\n"
+
+
+def remove_harness_config(home: Path, state_file: Path | None = None) -> None:
     global _WRITE_JOURNAL
     claude_md = home / ".claude" / "CLAUDE.md"
     codex_md = home / ".codex" / "AGENTS.md"
@@ -403,6 +414,8 @@ def remove_harness_config(home: Path) -> None:
             cleaned = _remove_owned_codex_sections(original, harden=False)
             parse_toml(cleaned)
             atomic_write(config_path, cleaned)
+        if state_file is not None:
+            atomic_write(state_file, _config_state_text(home), mode=0o600)
     except Exception:
         _WRITE_JOURNAL = None
         for path, original in originals.items():
@@ -493,6 +506,7 @@ def main() -> int:
     parser.add_argument("--enable-spark", action="store_true")
     parser.add_argument("--enable-task-created", action="store_true")
     parser.add_argument("--enable-task-completed", action="store_true")
+    parser.add_argument("--state-file", type=Path)
     args = parser.parse_args()
 
     home = args.home.expanduser().resolve()
@@ -509,7 +523,7 @@ def main() -> int:
         ):
             print(f"WARNING: {warning}")
     else:
-        remove_harness_config(home)
+        remove_harness_config(home, args.state_file)
     return 0
 
 
