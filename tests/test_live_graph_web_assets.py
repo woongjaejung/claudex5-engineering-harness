@@ -97,11 +97,12 @@ class WebDashboardAssetTests(unittest.TestCase):
           streams[0].listeners.error();
           const failureDelay = jobs.find((job) => job.delay === 5000); failureDelay.fn();
           await Promise.resolve(); await Promise.resolve();
-          streams[0].listeners.snapshot({data: JSON.stringify({revision:'sse-1', projects:[]})});
+          const retry = jobs.filter((job) => job.delay === 5000 && !job.cleared).at(-1); retry.fn();
+          streams[1].listeners.snapshot({data: JSON.stringify({revision:'sse-1', projects:[]})});
           transport.open('session=other', 5);
           console.log(JSON.stringify({urls:streams.map((stream)=>stream.url), firstClosed:streams[0].closed, fallbackFetches:fetches.length, applied, delays:jobs.map((job)=>job.delay), active:transport.state().activeStreams, fallback:transport.state().fallbackPolling, retryCleared:transport.state().retryPending === false, status}));
         """)
-        self.assertEqual(rendered["urls"], ["/api/events?selection=all", "/api/events?session=other"])
+        self.assertEqual(rendered["urls"], ["/api/events?selection=all", "/api/events?selection=all", "/api/events?session=other"])
         self.assertTrue(rendered["firstClosed"])
         self.assertEqual(rendered["fallbackFetches"], 1)
         self.assertIn(["poll-1", "poll"], rendered["applied"])
@@ -132,6 +133,51 @@ class WebDashboardAssetTests(unittest.TestCase):
         self.assertIn(5000, rendered["delays"])
         self.assertEqual(rendered["streams"], 1)
         self.assertFalse(rendered["polling"])
+
+    def test_transport_rejects_poll_after_json_decode_and_closed_stream_callbacks(self) -> None:
+        rendered = run_app_script("""
+          const {createTransport} = await import(process.env.APP_URL);
+          const jobs=[]; let serial=0; const applied=[]; const streams=[]; let resolveJson;
+          const timers={setTimeout(fn,delay){const job={id:++serial,fn,delay,cleared:false};jobs.push(job);return job.id},clearTimeout(id){const job=jobs.find((x)=>x.id===id);if(job)job.cleared=true}};
+          class Source { constructor(url){this.url=url;this.listeners={};streams.push(this)} addEventListener(name,fn){this.listeners[name]=fn} close(){this.closed=true} }
+          const fetchImpl=()=>Promise.resolve({ok:true,json:()=>new Promise((resolve)=>{resolveJson=resolve})});
+          const transport=createTransport({EventSourceImpl:Source,fetchImpl,timers,onBundle:(bundle,meta)=>applied.push([bundle.revision,meta.source]),onConnection:()=>{},onElapsed:()=>{}});
+          transport.open('session=a',1); streams[0].listeners.error(); jobs.find((job)=>job.delay===5000).fn(); await Promise.resolve();
+          transport.open('session=b',2); resolveJson({revision:'old'}); await Promise.resolve(); await Promise.resolve();
+          streams[0].listeners.snapshot({data:JSON.stringify({revision:'late'})}); streams[0].listeners.error();
+          console.log(JSON.stringify({applied,state:transport.state(),streams:streams.length}));
+        """)
+        self.assertEqual(rendered["applied"], [])
+        self.assertEqual(rendered["state"]["generation"], 2)
+        self.assertEqual(rendered["state"]["activeStreams"], 1)
+
+    def test_selection_failure_catalog_refresh_and_rollback_window(self) -> None:
+        rendered = run_app_script("""
+          const {createSelectionController} = await import(process.env.APP_URL);
+          const resolvers=[]; const sync=[]; const applied=[]; const errors=[]; const openings=[];
+          const fetchImpl=()=>new Promise((resolve)=>resolvers.push(resolve)); const transport={open:(query,generation)=>openings.push([query,generation]),close:()=>{}};
+          const controller=createSelectionController({fetchImpl,transport,sync:(query)=>sync.push(query),apply:(bundle)=>applied.push(bundle.revision),onError:(message)=>errors.push(message)});
+          controller.seed('session=a',{revision:'A',catalog:[],projects:[]});
+          const bad=controller.select('session=b'); resolvers[0]({ok:true,json:async()=>{throw new Error('bad json')}}); await bad;
+          const good=controller.select('session=b'); resolvers[1]({ok:true,json:async()=>({revision:'B',catalog:[{session_id:'b'}],projects:[]})}); await good;
+          controller.acceptStreamSnapshot(2); controller.initialStreamFailed(); resolvers[2]({ok:false,status:404}); await Promise.resolve(); await Promise.resolve();
+          console.log(JSON.stringify({state:controller.state(),sync,applied,errors,openings}));
+        """)
+        self.assertEqual(rendered["state"]["query"], "session=b")
+        self.assertEqual(rendered["state"]["bundle"]["revision"], "B")
+        self.assertEqual(rendered["sync"], ["session=a", "session=a", "session=b"])
+        self.assertEqual(rendered["errors"], ["Selection unavailable"])
+
+    def test_duration_uses_finished_time_and_mini_graph_changes_with_node_states(self) -> None:
+        rendered = run_app_script("""
+          const app=await import(process.env.APP_URL);
+          const completed={session_id:'done',status:'passed',started_at:'2026-08-01T00:00:00Z',finished_at:'2026-08-06T00:00:00Z',nodes:{a:{id:'a',state:'passed'}}};
+          const running={session_id:'run',status:'running',started_at:'2026-08-01T00:00:00Z',nodes:{a:{id:'a',state:'running'},b:{id:'b',state:'waiting'}}};
+          console.log(JSON.stringify({long:app.formatDuration('2026-08-01T00:00:00Z',new Date('2026-08-06T00:00:00Z')),completed:app.buildAllViewModel({projects:[{cwd:'/x',running:[],completed:[completed]}]},new Date('2026-08-20T00:00:00Z')).projects[0].completed[0].elapsed,mini:app.sessionMiniModel(running)}));
+        """)
+        self.assertEqual(rendered["long"], "120:00:00")
+        self.assertEqual(rendered["completed"], "120:00:00")
+        self.assertEqual(rendered["mini"], {"running": 1, "waiting": 1, "terminal": 0})
 
     def test_staged_selection_preserves_active_then_rolls_back_only_on_confirmed_404(self) -> None:
         rendered = run_app_script("""

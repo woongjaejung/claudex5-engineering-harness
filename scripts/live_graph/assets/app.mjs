@@ -22,7 +22,7 @@ function parseTime(value) {
 
 export function formatDuration(startedAt, now = new Date()) {
   const start = parseTime(startedAt);
-  const finish = now instanceof Date ? now.getTime() : Number(now);
+  const finish = now instanceof Date ? now.getTime() : (Number.isFinite(Number(now)) ? Number(now) : parseTime(now));
   if (start === null || !Number.isFinite(finish)) return "—";
   const seconds = Math.max(0, Math.floor((finish - start) / 1000));
   const hours = String(Math.floor(seconds / 3600)).padStart(2, "0");
@@ -54,8 +54,19 @@ function sessionView(snapshot, now) {
     state,
     progress: counts,
     updatedAge: formatAge(snapshot.updated_at, now),
-    elapsed: state === "running" ? formatDuration(snapshot.started_at || snapshot.created_at || snapshot.updated_at, now) : "complete",
+    elapsed: formatDuration(snapshot.started_at || snapshot.created_at || snapshot.updated_at, state === "running" ? now : (snapshot.finished_at || snapshot.updated_at)),
+    mini: sessionMiniModel(snapshot),
   };
+}
+
+export function sessionMiniModel(snapshot) {
+  const result = {running: 0, waiting: 0, terminal: 0};
+  for (const node of Object.values(snapshot?.nodes || {})) {
+    if (node?.state === "running") result.running += 1;
+    else if (node?.state === "waiting") result.waiting += 1;
+    else if (node) result.terminal += 1;
+  }
+  return result;
 }
 
 export function buildAllViewModel(bundle, now = new Date()) {
@@ -87,10 +98,13 @@ export function createTransport({EventSourceImpl, fetchImpl, timers = globalThis
   let elapsedTimer = null;
   let query = "selection=all";
   let stopped = true;
+  let sourceAttempt = 0;
+  let activeSourceAttempt = 0;
+  let pollAttempt = 0;
 
   const clear = (id) => { if (id !== null) timers.clearTimeout(id); };
   const clearTimers = () => { clear(fallbackTimer); clear(retryTimer); clear(elapsedTimer); fallbackTimer = retryTimer = elapsedTimer = null; };
-  const closeStream = () => { if (stream && typeof stream.close === "function") stream.close(); stream = null; };
+  const closeStream = () => { activeSourceAttempt = ++sourceAttempt; if (stream && typeof stream.close === "function") stream.close(); stream = null; };
   const scheduleElapsed = () => {
     clear(elapsedTimer);
     elapsedTimer = timers.setTimeout(() => { if (!stopped) { onElapsed(); scheduleElapsed(); } }, 1000);
@@ -105,9 +119,12 @@ export function createTransport({EventSourceImpl, fetchImpl, timers = globalThis
   };
   const poll = (generation) => {
     if (generation !== selectionGeneration || stopped) return;
+    const attempt = ++pollAttempt;
     Promise.resolve(fetchImpl?.(`/api/snapshot?${query}`)).then(async (response) => {
       if (!response?.ok || !canApplyPollResult(selectionGeneration, generation, streamHealthy)) return;
-      onBundle(await response.json(), {source: "poll", generation});
+      const bundle = await response.json();
+      if (attempt !== pollAttempt || !canApplyPollResult(selectionGeneration, generation, streamHealthy) || stopped) return;
+      onBundle(bundle, {source: "poll", generation});
     }).catch(() => {}).finally(() => {
       if (generation === selectionGeneration && !stopped && !streamHealthy) {
         fallbackTimer = timers.setTimeout(() => poll(generation), 5000);
@@ -120,8 +137,8 @@ export function createTransport({EventSourceImpl, fetchImpl, timers = globalThis
     if (immediate) poll(generation);
     else fallbackTimer = timers.setTimeout(() => poll(generation), 5000);
   };
-  const healthySnapshot = (event, generation) => {
-    if (generation !== selectionGeneration || stopped) return;
+  const healthySnapshot = (event, generation, source, attempt) => {
+    if (generation !== selectionGeneration || stopped || stream !== source || activeSourceAttempt !== attempt) return;
     try {
       const bundle = JSON.parse(event.data);
       streamHealthy = true;
@@ -134,14 +151,16 @@ export function createTransport({EventSourceImpl, fetchImpl, timers = globalThis
   const openEventSource = (generation) => {
     if (generation !== selectionGeneration || stopped || stream) return;
     if (typeof EventSourceImpl !== "function") { startFallbackPolling(generation, true); scheduleRetry(generation); return; }
-    try { stream = new EventSourceImpl(`/api/events?${query}`); }
+    let source;
+    const attempt = ++sourceAttempt;
+    try { source = new EventSourceImpl(`/api/events?${query}`); stream = source; activeSourceAttempt = attempt; }
     catch { stream = null; startFallbackPolling(generation, true); scheduleRetry(generation); return; }
-    stream.addEventListener("snapshot", (event) => healthySnapshot(event, generation));
-    stream.addEventListener("degraded", () => {
-      if (generation === selectionGeneration && !stopped) onConnection("degraded");
+    source.addEventListener("snapshot", (event) => healthySnapshot(event, generation, source, attempt));
+    source.addEventListener("degraded", () => {
+      if (generation === selectionGeneration && !stopped && stream === source && activeSourceAttempt === attempt) onConnection("degraded");
     });
     const fail = () => {
-      if (generation !== selectionGeneration || stopped) return;
+      if (generation !== selectionGeneration || stopped || stream !== source || activeSourceAttempt !== attempt) return;
       const initial = !streamHealthy;
       closeStream(); streamHealthy = false;
       onConnection("reconnecting");
@@ -149,8 +168,7 @@ export function createTransport({EventSourceImpl, fetchImpl, timers = globalThis
       scheduleRetry(generation);
       if (initial) onInitialFailure(generation);
     };
-    stream.addEventListener("error", fail);
-    stream.onerror = fail;
+    source.addEventListener("error", fail);
   };
   return {
     open(nextQuery, generation) {
@@ -164,46 +182,59 @@ export function createTransport({EventSourceImpl, fetchImpl, timers = globalThis
   };
 }
 
-export function createSelectionController({fetchImpl, transport, apply = () => {}, sync = () => {}, onError = () => {}} = {}) {
+export function createSelectionController({fetchImpl, transport, apply = () => {}, sync = () => {}, refreshCatalog = () => {}, onError = () => {}, clearError = () => {}} = {}) {
   let selectionGeneration = 0;
   let selectionAttemptGeneration = 0;
   let query = "selection=all";
   let bundle = null;
   let previous = null;
   let candidateController = null;
+  let candidateAwaitingFirstSnapshot = false;
   const commit = (nextQuery, nextBundle) => {
     previous = bundle ? {query, bundle} : null;
     selectionGeneration += 1; query = normaliseQuery(nextQuery); bundle = nextBundle;
-    transport.close(); sync(query); apply(bundle); transport.open(query, selectionGeneration);
+    candidateAwaitingFirstSnapshot = true;
+    transport.close(); sync(query); refreshCatalog(bundle.catalog || [], query); apply(bundle); clearError(); transport.open(query, selectionGeneration);
   };
   return {
     seed(initialQuery, initialBundle) {
       query = normaliseQuery(initialQuery); bundle = initialBundle; selectionGeneration += 1;
-      sync(query); apply(bundle); transport.open(query, selectionGeneration);
+      previous = null; candidateAwaitingFirstSnapshot = false;
+      sync(query); refreshCatalog(bundle.catalog || [], query); apply(bundle); clearError(); transport.open(query, selectionGeneration);
     },
     async select(nextQuery) {
       const candidate = normaliseQuery(nextQuery);
       const attempt = ++selectionAttemptGeneration;
       if (candidateController?.abort) candidateController.abort();
       candidateController = typeof AbortController === "function" ? new AbortController() : null;
-      let response;
-      try { response = await fetchImpl(`/api/snapshot?${candidate}`, candidateController ? {signal: candidateController.signal} : {}); }
-      catch { if (attempt === selectionAttemptGeneration) onError("Selection unavailable"); return false; }
-      if (attempt !== selectionAttemptGeneration || !response?.ok) { if (attempt === selectionAttemptGeneration) onError("Selection unavailable"); return false; }
-      const nextBundle = await response.json();
+      let nextBundle;
+      try {
+        const response = await fetchImpl(`/api/snapshot?${candidate}`, candidateController ? {signal: candidateController.signal} : {});
+        if (!response?.ok) throw new Error("selection unavailable");
+        nextBundle = await response.json();
+      } catch {
+        if (attempt === selectionAttemptGeneration) { sync(query); onError("Selection unavailable"); }
+        return false;
+      }
       if (attempt !== selectionAttemptGeneration) return false;
       commit(candidate, nextBundle); return true;
     },
-    async initialStreamFailed() {
-      const generation = selectionGeneration;
+    acceptStreamSnapshot(generation, acceptedBundle = null) {
+      if (generation !== selectionGeneration) return false;
+      candidateAwaitingFirstSnapshot = false; previous = null;
+      if (acceptedBundle) { bundle = acceptedBundle; refreshCatalog(bundle.catalog || [], query); apply(bundle); }
+      clearError(); return true;
+    },
+    async initialStreamFailed(generation = selectionGeneration) {
       const failedQuery = query;
       let response;
       try { response = await fetchImpl(`/api/snapshot?${failedQuery}`); } catch { return; }
-      if (generation !== selectionGeneration || response?.status !== 404 || !previous) return;
+      if (generation !== selectionGeneration || !candidateAwaitingFirstSnapshot || response?.status !== 404 || !previous) return;
       const restore = previous; previous = null; selectionGeneration += 1; query = restore.query; bundle = restore.bundle;
-      transport.close(); sync(query); apply(bundle); transport.open(query, selectionGeneration);
+      candidateAwaitingFirstSnapshot = false;
+      transport.close(); sync(query); refreshCatalog(bundle.catalog || [], query); apply(bundle); clearError(); transport.open(query, selectionGeneration);
     },
-    state: () => ({query, bundle, selectionGeneration, selectionAttemptGeneration}),
+    state: () => ({query, bundle, selectionGeneration, selectionAttemptGeneration, candidateAwaitingFirstSnapshot}),
   };
 }
 
@@ -245,7 +276,7 @@ function drawGraph(snapshot, onNode) {
     const title=svgElement("title"); title.textContent=safeText(node.label || node.id); group.append(title);
     group.append(svgElement("rect", {class:"node-frame", width:180, height:62})); group.append(svgElement("rect", {class:"node-accent", width:4, height:62}));
     const subject=svgElement("text", {class:"node-label", x:12, y:22}); subject.textContent=clipped(node.label || node.id, 25); group.append(subject);
-    const line=svgElement("text", {class:"node-meta", x:12, y:42}); line.textContent=clipped(`${state} · ${formatDuration(node.started_at)}`, 29); group.append(line);
+    const line=svgElement("text", {class:"node-meta", x:12, y:42}); line.textContent=clipped(`${state} · ${formatDuration(node.started_at, TERMINAL.has(state) ? node.finished_at : new Date())}`, 29); group.append(line);
     const model=svgElement("text", {class:"node-kind", x:12, y:55}); model.textContent=clipped([node.model,node.effort].filter(Boolean).join(" · ") || node.kind || "node", 28); group.append(model);
     group.addEventListener("click", () => onNode(node)); group.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onNode(node); } }); svg.append(group);
   }
@@ -259,16 +290,18 @@ function renderCard(view, parent, focus) {
   const timing=document.createElement("span"); timing.className="card-timing";
   if (view.state === "running") { timing.dataset.elapsed="true"; timing.dataset.startedAt=String(view.snapshot.started_at || view.snapshot.created_at || view.snapshot.updated_at || ""); }
   timing.textContent=`${view.updatedAge} · ${view.elapsed}`; card.append(timing);
-  const graph=document.createElement("span"); graph.className="micro-graph"; graph.textContent=`${Math.max(1, view.progress.total)} nodes`; card.append(graph);
+  const graph=document.createElement("span"); graph.className="micro-graph"; graph.dataset.running=String(view.mini.running); graph.dataset.waiting=String(view.mini.waiting); graph.dataset.terminal=String(view.mini.terminal); graph.setAttribute("aria-label", `${view.mini.running} running, ${view.mini.waiting} waiting, ${view.mini.terminal} terminal nodes`);
+  for (const state of ["running", "waiting", "terminal"]) { const segment=document.createElement("i"); segment.className=`micro-${state}`; segment.style.flexGrow=String(Math.max(0.25, view.mini[state])); graph.append(segment); }
+  card.append(graph);
   card.addEventListener("click", () => focus(view.snapshot)); parent.append(card);
 }
 
-export function renderAll(bundle, focus, now = new Date()) {
+export function renderAll(bundle, focus, now = new Date(), {openProjects = new Set()} = {}) {
   const root=byId("all-view"); root.hidden=false; byId("focused-view").hidden=true; root.replaceChildren(); const model=buildAllViewModel(bundle, now);
   for (const project of model.projects) {
     const section=document.createElement("section"); section.className="project-section"; const heading=document.createElement("h2"); heading.textContent=project.cwd; section.append(heading);
     const running=document.createElement("div"); running.className="session-grid"; for (const view of project.running) renderCard(view,running,focus); section.append(running);
-    const completed=document.createElement("details"); completed.className="completed-sessions"; const summary=document.createElement("summary"); summary.textContent=`Completed sessions (${project.completed.length})`; completed.append(summary); const grid=document.createElement("div"); grid.className="session-grid"; for (const view of project.completed) renderCard(view,grid,focus); completed.append(grid); section.append(completed); root.append(section);
+    const completed=document.createElement("details"); completed.className="completed-sessions"; completed.open=openProjects.has(project.cwd); completed.addEventListener("toggle", () => { if (completed.open) openProjects.add(project.cwd); else openProjects.delete(project.cwd); }); const summary=document.createElement("summary"); summary.textContent=`Completed sessions (${project.completed.length})`; completed.append(summary); const grid=document.createElement("div"); grid.className="session-grid"; for (const view of project.completed) renderCard(view,grid,focus); completed.append(grid); section.append(completed); root.append(section);
   }
   byId("empty-state").classList.toggle("hidden", model.projects.length > 0);
 }
@@ -284,16 +317,22 @@ export function applyBundle(bundle, {focusedSnapshot = null, focus, now = new Da
   if (focusedSnapshot) renderFocused(focusedSnapshot, () => focus?.(null)); else renderAll(bundle, (snapshot) => focus?.(snapshot), now);
 }
 
+export function findSnapshot(bundle, sessionId) {
+  for (const project of bundle?.projects || []) for (const snapshot of [...(project.running || []), ...(project.completed || [])]) if (safeText(snapshot.session_id) === safeText(sessionId)) return snapshot;
+  return null;
+}
+
 function queryFromLocation() { const params=new URLSearchParams(window.location.search); return params.get("selection") === "all" ? "selection=all" : `session=${encodeURIComponent(params.get("session") || "")}`; }
 
 function boot() {
-  let lastBundle=null; let focused=null; let scrollY=0; let controller;
+  let lastBundle=null; let focusedSessionId=null; let originSessionId=null; let scrollY=0; let controller; const openProjects=new Set();
   const setConnection=(state) => { const messages={connected:"LOCAL / CONNECTED", connecting:"LOCAL / CONNECTING", reconnecting:"LOCAL / RECONNECTING", degraded:"LOCAL / DEGRADED"}; byId("connection").dataset.state=state; byId("connection-text").textContent=messages[state] || messages.connecting; };
-  const render=() => applyBundle(lastBundle || {projects:[]}, {focusedSnapshot:focused, focus:(snapshot) => { if (snapshot) { scrollY=window.scrollY; focused=snapshot; render(); } else { focused=null; render(); window.scrollTo(0, scrollY); } }});
-  const transport=createTransport({EventSourceImpl:globalThis.EventSource, fetchImpl:globalThis.fetch?.bind(globalThis), onBundle:(bundle) => { lastBundle=bundle; render(); }, onConnection:setConnection, onElapsed:() => { document.querySelectorAll("[data-elapsed]").forEach((node) => { node.textContent=node.textContent.replace(/\d{2}:\d{2}:\d{2}|complete$/, formatDuration(node.dataset.startedAt)); }); }, onInitialFailure:() => controller?.initialStreamFailed()});
-  controller=createSelectionController({fetchImpl:globalThis.fetch?.bind(globalThis), transport, apply:(bundle) => { lastBundle=bundle; focused=null; render(); }, sync:(query) => { const url=`${window.location.pathname}?${query}`; window.history.replaceState({}, "", url); byId("session-selector").value=query; }, onError:(message) => { byId("selection-error").textContent=message; }});
+  const render=() => { const focused=focusedSessionId ? findSnapshot(lastBundle, focusedSessionId) : null; if (focusedSessionId && !focused) focusedSessionId=null; if (focused) renderFocused(focused, () => { focusedSessionId=null; renderAll(lastBundle, chooseFocus, new Date(), {openProjects}); const origin=document.querySelector(`[data-session="${CSS.escape(originSessionId || "")}"]`); origin?.focus(); window.scrollTo(0,scrollY); }); else renderAll(lastBundle || {projects:[]}, chooseFocus, new Date(), {openProjects}); };
+  const chooseFocus=(snapshot) => { scrollY=window.scrollY; originSessionId=safeText(snapshot.session_id); focusedSessionId=originSessionId; render(); };
+  const transport=createTransport({EventSourceImpl:globalThis.EventSource, fetchImpl:globalThis.fetch?.bind(globalThis), onBundle:(bundle,meta) => { if (meta.source === "sse") controller?.acceptStreamSnapshot(meta.generation,bundle); else { lastBundle=bundle; render(); } }, onConnection:setConnection, onElapsed:render, onInitialFailure:(generation) => controller?.initialStreamFailed(generation)});
+  controller=createSelectionController({fetchImpl:globalThis.fetch?.bind(globalThis), transport, apply:(bundle) => { lastBundle=bundle; render(); }, sync:(query) => { const url=`${window.location.pathname}?${query}`; window.history.replaceState({}, "", url); byId("session-selector").value=query; }, refreshCatalog:(catalog,query) => populateSelector(catalog,query), onError:(message) => { byId("selection-error").textContent=message; }, clearError:() => { byId("selection-error").textContent=""; }});
   byId("session-selector").addEventListener("change", (event) => controller.select(event.target.value));
-  const initial=queryFromLocation(); fetch(`/api/snapshot?${initial}`).then((response) => response.ok ? response.json() : Promise.reject()).then((bundle) => { populateSelector(bundle.catalog || [], initial); controller.seed(initial,bundle); }).catch(() => { setConnection("reconnecting"); render(); });
+  const initial=queryFromLocation(); fetch(`/api/snapshot?${initial}`).then((response) => response.ok ? response.json() : Promise.reject()).then((bundle) => controller.seed(initial,bundle)).catch(() => { setConnection("reconnecting"); render(); });
 }
 
 export function populateSelector(catalog, selected) {
