@@ -330,6 +330,9 @@ class StateStore:
         marker_size = snapshot.get("_event_log_size")
         marker_mtime = snapshot.get("_event_log_mtime_ns")
         if marker_size is not None or marker_mtime is not None:
+            if isinstance(marker_size, int) and event_stat.st_size < marker_size:
+                snapshot["degraded"] = True
+                return True
             return marker_size == event_stat.st_size and marker_mtime == event_stat.st_mtime_ns
 
         # Schema-v1 snapshots created before the durable marker are current when
@@ -423,6 +426,14 @@ class StateStore:
             timestamp = _utc_now()
             if snapshot is None:
                 snapshot = new_snapshot(session_id, str(safe_payload.get("cwd", "")), timestamp)
+            event_stat = self._event_log_stat(run_dir)
+            marker_size = snapshot.get("_event_log_size")
+            if (
+                event_stat is not None
+                and isinstance(marker_size, int)
+                and event_stat.st_size < marker_size
+            ):
+                raise ValueError("event log was truncated; refusing to append")
             durable_sequence = int(snapshot.get("_event_log_sequence", snapshot.get("sequence", 0)))
             sequence = max(int(snapshot.get("sequence", 0)), durable_sequence) + 1
             event: dict[str, object] = {
@@ -440,6 +451,11 @@ class StateStore:
             events_path = run_dir / "events.jsonl"
             descriptor = self._open_private(events_path, os.O_CREAT | os.O_APPEND | os.O_WRONLY)
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                if event_stat is not None and event_stat.st_size > 0:
+                    with events_path.open("rb") as existing:
+                        existing.seek(-1, os.SEEK_END)
+                        if existing.read(1) != b"\n":
+                            stream.write("\n")
                 stream.write(json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
                 stream.flush()
                 os.fsync(stream.fileno())
