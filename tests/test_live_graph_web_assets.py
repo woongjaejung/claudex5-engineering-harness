@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import base64
 import json
 from pathlib import Path
 import re
@@ -35,85 +36,156 @@ def running_server():
         server.server_close()
 
 
+def run_app_script(script: str) -> dict[str, object]:
+    encoded = base64.b64encode((ASSET_DIRECTORY / "app.mjs").read_bytes()).decode("ascii")
+    result = subprocess.run(
+        ["node", "--input-type=module", "--eval", script],
+        env={**__import__("os").environ, "APP_URL": f"data:text/javascript;base64,{encoded}"},
+        text=True, capture_output=True, check=False,
+    )
+    if result.returncode:
+        raise AssertionError(result.stderr)
+    return json.loads(result.stdout)
+
+
 class WebDashboardAssetTests(unittest.TestCase):
     def test_fixed_assets_are_local_and_html_references_only_them(self) -> None:
-        expected = {
-            "index.html": "text/html",
-            "style.css": "text/css",
-            "app.mjs": "text/javascript",
-        }
-        contents = {
-            name: (ASSET_DIRECTORY / name).read_text(encoding="utf-8")
-            for name in expected
-        }
-        html = contents["index.html"]
-        self.assertEqual(re.findall(r'(?:href|src)="([^"]+)"', html), ["data:,", "/style.css", "/app.mjs"])
-        self.assertNotIn("<script>", html)
+        expected = {"index.html": "text/html", "style.css": "text/css", "app.mjs": "text/javascript"}
+        contents = {name: (ASSET_DIRECTORY / name).read_text(encoding="utf-8") for name in expected}
+        self.assertEqual(re.findall(r'(?:href|src)="([^"]+)"', contents["index.html"]), ["data:,", "/style.css", "/app.mjs"])
+        self.assertNotIn("<script>", contents["index.html"])
         for content in contents.values():
-            external_references = re.sub(r"https?://www\.w3\.org/2000/svg", "", content)
-            self.assertNotRegex(external_references, r"https?://|//[^\n]*\b(?:analytics|tracking)\b")
-
+            self.assertNotRegex(re.sub(r"https?://www\.w3\.org/2000/svg", "", content), r"https?://|//[^\n]*\b(?:analytics|tracking)\b")
         with running_server() as base_url:
             for path, content_type in (("/", expected["index.html"]), ("/style.css", expected["style.css"]), ("/app.mjs", expected["app.mjs"])):
                 with self.subTest(path=path), urlopen(base_url + path) as response:
                     self.assertTrue(response.headers["Content-Type"].startswith(content_type))
                     self.assertTrue(response.read())
 
-    def test_fixed_page_retains_focused_graph_summary_and_state_regions(self) -> None:
-        html = (ASSET_DIRECTORY / "index.html").read_text(encoding="utf-8")
-        for marker in ("scanlines", "identity", "state-running", "state-interrupted", "privacy-card", 'id="graph"', 'id="next-runnable"'):
-            with self.subTest(marker=marker):
-                self.assertIn(marker, html)
-        css = (ASSET_DIRECTORY / "style.css").read_text(encoding="utf-8")
-        for selector in (".edge.depends_on", ".node-running .node-frame", ".node-accent", ".state-interrupted"):
-            with self.subTest(selector=selector):
-                self.assertIn(selector, css)
+    def test_view_model_duration_order_and_poll_generation_are_pure(self) -> None:
+        rendered = run_app_script("""
+          const app = await import(process.env.APP_URL);
+          const bundle = {projects:[
+            {cwd:'/z/project', running:[{session_id:'run-z', status:'running', title:'Zulu'}], completed:[{session_id:'done-z', status:'passed', title:'Done'}]},
+            {cwd:'/a/project', running:[{session_id:'run-a', status:'running', title:'Alpha'}], completed:[]}
+          ]};
+          console.log(JSON.stringify({
+            duration: app.formatDuration('2026-08-14T10:00:00Z', new Date('2026-08-14T11:02:03Z')),
+            model: app.buildAllViewModel(bundle, new Date('2026-08-14T11:02:03Z')),
+            acceptsFresh: app.canApplyPollResult(7, 7, false),
+            rejectsOld: app.canApplyPollResult(7, 6, false),
+            rejectsHealthy: app.canApplyPollResult(7, 7, true),
+          }));
+        """)
+        self.assertEqual(rendered["duration"], "01:02:03")
+        self.assertEqual([project["cwd"] for project in rendered["model"]["projects"]], ["/a/project", "/z/project"])
+        self.assertTrue(rendered["model"]["projects"][1]["completedCollapsed"])
+        self.assertEqual(rendered["model"]["projects"][0]["running"][0]["title"], "Alpha")
+        self.assertTrue(rendered["acceptsFresh"])
+        self.assertFalse(rendered["rejectsOld"])
+        self.assertFalse(rendered["rejectsHealthy"])
 
-    def test_graph_prerequisites_use_only_satisfied_states(self) -> None:
-        app = (ASSET_DIRECTORY / "app.mjs").read_text(encoding="utf-8")
-        self.assertIn('const SATISFIED = new Set(["passed", "skipped"]);', app)
-        self.assertIn("SATISFIED.has(stateById.get(source))", app)
-        self.assertNotIn("TERMINAL.has(stateById.get(source))", app)
+    def test_transport_keeps_one_stream_falls_back_and_stops_polling_on_sse(self) -> None:
+        rendered = run_app_script("""
+          const {createTransport} = await import(process.env.APP_URL);
+          const jobs = []; let nextId = 0; const applied = []; const status = []; const streams = [];
+          const timers = { setTimeout(fn, delay) { const job = {id: ++nextId, fn, delay, cleared:false}; jobs.push(job); return job.id; }, clearTimeout(id) { const job = jobs.find((entry) => entry.id === id); if (job) job.cleared = true; }, setInterval(fn, delay) { return this.setTimeout(fn, delay); }, clearInterval(id) { this.clearTimeout(id); } };
+          class Source { constructor(url) { this.url=url; this.listeners={}; this.closed=false; streams.push(this); } addEventListener(name, fn) { this.listeners[name]=fn; } close() { this.closed=true; } }
+          const fetches=[]; const fetchImpl=(url) => { fetches.push(url); return Promise.resolve({ok:true, json: async () => ({revision:'poll-1', projects:[]})}); };
+          const transport = createTransport({EventSourceImpl:Source, fetchImpl, timers, onBundle:(bundle, meta) => applied.push([bundle.revision, meta.source]), onConnection:(value) => status.push(value), onElapsed:() => status.push('tick')});
+          transport.open('selection=all', 4);
+          streams[0].listeners.error();
+          const failureDelay = jobs.find((job) => job.delay === 5000); failureDelay.fn();
+          await Promise.resolve(); await Promise.resolve();
+          streams[0].listeners.snapshot({data: JSON.stringify({revision:'sse-1', projects:[]})});
+          transport.open('session=other', 5);
+          console.log(JSON.stringify({urls:streams.map((stream)=>stream.url), firstClosed:streams[0].closed, fallbackFetches:fetches.length, applied, delays:jobs.map((job)=>job.delay), active:transport.state().activeStreams, fallback:transport.state().fallbackPolling, retryCleared:transport.state().retryPending === false, status}));
+        """)
+        self.assertEqual(rendered["urls"], ["/api/events?selection=all", "/api/events?session=other"])
+        self.assertTrue(rendered["firstClosed"])
+        self.assertEqual(rendered["fallbackFetches"], 1)
+        self.assertIn(["poll-1", "poll"], rendered["applied"])
+        self.assertIn(["sse-1", "sse"], rendered["applied"])
+        self.assertIn(1000, rendered["delays"])
+        self.assertEqual(rendered["active"], 1)
+        self.assertFalse(rendered["fallback"])
+        self.assertTrue(rendered["retryCleared"])
 
-    def test_focused_snapshot_event_renders_svg_edges_status_metadata_and_runnable_nodes(self) -> None:
-        bundle = {
-            "selection": {"mode": "session", "session_id": "selected-session"},
-            "projects": [{"cwd": "/work", "running": [{
-                "session_id": "selected-session", "cwd": "/work", "status": "running",
-                "nodes": {
-                    "task:done": {"id": "task:done", "kind": "task", "label": "Completed prerequisite", "state": "passed", "sequence": 1},
-                    "agent:impl": {"id": "agent:impl", "kind": "claude_agent", "label": "Implement dashboard", "state": "running", "model": "claude-sonnet-5", "effort": "high", "sequence": 2},
-                    "task:next": {"id": "task:next", "kind": "task", "label": "Run quality checks", "state": "waiting", "sequence": 3},
-                },
-                "edges": {"dependency": {"id": "dependency", "source": "task:next", "target": "task:done", "kind": "depends_on"}},
-            }], "completed": []}],
-        }
-        script = """
-class Element {
-  constructor() { this.children = []; this.attributes = {}; this.dataset = {}; this.style = {}; this.textContent = \"\"; this.classList = { values: new Set(), add: (...v) => v.forEach((x) => this.classList.values.add(x)), remove: (...v) => v.forEach((x) => this.classList.values.delete(x)), toggle: (v, on) => on ? this.classList.values.add(v) : this.classList.values.delete(v) }; }
-  append(...children) { this.children.push(...children); }
-  replaceChildren(...children) { this.children = children; }
-  setAttribute(key, value) { this.attributes[key] = String(value); }
-}
-const ids = new Map([\"connection\", \"connection-text\", \"run-id\", \"project\", \"run-state\", \"progress-text\", \"progress-bar\", \"updated-at\", \"degraded\", \"empty-state\", \"graph\", \"next-runnable\"].map((id) => [id, new Element()]));
-globalThis.document = { getElementById: (id) => ids.get(id), createElementNS: () => new Element(), createElement: () => new Element() };
-globalThis.window = { location: { search: "?session=selected-session" } };
-globalThis.EventSource = class { constructor() { this.listeners = new Map(); globalThis.source = this; } addEventListener(name, callback) { this.listeners.set(name, callback); } };
-await import(\"./scripts/live_graph/assets/app.mjs\");
-source.listeners.get(\"snapshot\")({ data: process.env.BUNDLE });
-const graph = ids.get(\"graph\");
-console.log(JSON.stringify({ edge: graph.children[1].attributes.class, nodes: graph.children.slice(2).map((node) => ({ className: node.attributes.class, meta: node.children[4].textContent })), next: ids.get(\"next-runnable\").children.map((node) => node.textContent) }));
-"""
-        result = subprocess.run(
-            ["node", "--input-type=module", "--eval", script],
-            cwd=ASSET_DIRECTORY.parents[2], env={**__import__("os").environ, "BUNDLE": json.dumps(bundle)},
-            text=True, capture_output=True, check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        rendered = json.loads(result.stdout)
-        self.assertEqual(rendered["edge"], "edge depends_on")
-        self.assertIn({"className": "node node-running", "meta": "claude-sonnet-5 · high"}, rendered["nodes"])
-        self.assertEqual(rendered["next"], ["Run quality checks"])
+    def test_transport_polls_immediately_without_eventsource_retries_and_rejects_stale_poll(self) -> None:
+        rendered = run_app_script("""
+          const {createTransport} = await import(process.env.APP_URL);
+          const jobs=[]; let serial=0; const applied=[]; const attempts=[];
+          const timers = { setTimeout(fn, delay) { const job={id:++serial, fn, delay, cleared:false}; jobs.push(job); return job.id; }, clearTimeout(id) { const job=jobs.find((entry)=>entry.id===id); if(job) job.cleared=true; }, setInterval(fn, delay) { return this.setTimeout(fn, delay); }, clearInterval(id) { this.clearTimeout(id); } };
+          const pending=[]; const fetchImpl=(url) => new Promise((resolve) => { attempts.push(url); pending.push(resolve); });
+          let Source = undefined;
+          function MaybeSource(url) { if (!Source) throw new Error('missing'); return new Source(url); }
+          const transport=createTransport({EventSourceImpl:MaybeSource, fetchImpl, timers, onBundle:(bundle, meta)=>applied.push([bundle.revision, meta.generation]), onConnection:()=>{}, onElapsed:()=>{}});
+          transport.open('session=a', 1);
+          transport.open('session=b', 2);
+          pending[0]({ok:true, json:async()=>({revision:'old'})}); await Promise.resolve(); await Promise.resolve();
+          class Recovered { constructor(url) { this.url=url; this.listeners={}; globalThis.recovered=this; } addEventListener(name, fn) { this.listeners[name]=fn; } close() {} }
+          Source=Recovered; const retry=jobs.find((job)=>job.delay===5000 && !job.cleared); retry.fn(); globalThis.recovered.listeners.snapshot({data:JSON.stringify({revision:'fresh'})});
+          console.log(JSON.stringify({attempts, applied, delays:jobs.map((job)=>job.delay), streams:transport.state().activeStreams, polling:transport.state().fallbackPolling}));
+        """)
+        self.assertGreaterEqual(len(rendered["attempts"]), 2)
+        self.assertEqual(rendered["applied"], [["fresh", 2]])
+        self.assertIn(5000, rendered["delays"])
+        self.assertEqual(rendered["streams"], 1)
+        self.assertFalse(rendered["polling"])
+
+    def test_staged_selection_preserves_active_then_rolls_back_only_on_confirmed_404(self) -> None:
+        rendered = run_app_script("""
+          const {createSelectionController} = await import(process.env.APP_URL);
+          const requests=[]; const resolvers=[]; const openings=[]; const events=[];
+          const fetchImpl=(url, options={}) => new Promise((resolve) => { requests.push(url); resolvers.push(resolve); });
+          const transport={open:(query, generation)=>openings.push([query,generation]), close:()=>events.push('close')};
+          const controller=createSelectionController({fetchImpl, transport, apply:(bundle)=>events.push(['apply',bundle.revision]), sync:(query)=>events.push(['sync',query])});
+          controller.seed('session=a', {revision:'A', catalog:[{session_id:'a'},{session_id:'b'},{session_id:'c'}], projects:[]});
+          const b=controller.select('session=b');
+          resolvers[0]({ok:false, status:404}); await b;
+          const bLate=controller.select('session=b'); const c=controller.select('session=c');
+          resolvers[2]({ok:true, json:async()=>({revision:'C', catalog:[], projects:[]})}); await c;
+          resolvers[1]({ok:true, json:async()=>({revision:'B', catalog:[], projects:[]})}); await bLate;
+          controller.initialStreamFailed();
+          resolvers[3]({ok:false,status:404}); await Promise.resolve(); await Promise.resolve();
+          console.log(JSON.stringify({state:controller.state(), openings, events, requests}));
+        """)
+        self.assertEqual(rendered["state"]["query"], "session=a")
+        self.assertEqual(rendered["state"]["bundle"]["revision"], "A")
+        self.assertEqual(rendered["openings"], [["session=a", 1], ["session=c", 2], ["session=a", 3]])
+        self.assertIn("/api/snapshot?session=b", rendered["requests"])
+        self.assertIn("/api/snapshot?session=c", rendered["requests"])
+
+    def test_project_grid_selector_and_focused_graph_are_accessible_and_keep_full_detail(self) -> None:
+        rendered = run_app_script("""
+          const app = await import(process.env.APP_URL);
+          class Element {
+            constructor(tag='div') { this.tagName=tag; this.children=[]; this.attributes={}; this.dataset={}; this.style={}; this.listeners={}; this.classList={values:new Set(), add:(...v)=>v.forEach((x)=>this.classList.values.add(x)), remove:(...v)=>v.forEach((x)=>this.classList.values.delete(x)), toggle:(v,on)=>on ? this.classList.values.add(v) : this.classList.values.delete(v)}; this.textContent=''; this.hidden=false; }
+            append(...items) { this.children.push(...items); } replaceChildren(...items) { this.children=items; } setAttribute(key,value) { this.attributes[key]=String(value); } addEventListener(name, callback) { this.listeners[name]=callback; }
+          }
+          const ids=new Map(['all-view','empty-state','focused-view','focus-title','focus-path','node-detail','graph','back-button','session-selector'].map((id)=>[id,new Element()]));
+          globalThis.document={getElementById:(id)=>ids.get(id), createElement:(tag)=>new Element(tag), createElementNS:(_ns,tag)=>new Element(tag)};
+          const node={id:'task:full',kind:'task',label:'Complete safe subject without clipping',description:'Complete safe description without clipping',state:'running',sequence:1,model:'model-x',effort:'high',started_at:'2026-08-14T10:00:00Z'};
+          const bundle={projects:[{cwd:'/one',running:[{session_id:'a',title:'Running A',status:'running',nodes:{'task:full':node},edges:[]}],completed:[{session_id:'done',title:'Completed A',status:'passed',nodes:{},edges:[]}]},{cwd:'/two',running:[{session_id:'b',title:'Running B',status:'running',nodes:{},edges:[]}],completed:[]}]};
+          app.populateSelector([{session_id:'a',title:'Running A',cwd:'/one'},{session_id:'b',title:'Running B',cwd:'/two'}],'selection=all');
+          app.renderAll(bundle,()=>{}); const firstProject=ids.get('all-view').children[0]; const runningCard=firstProject.children[1].children[0]; const completed=firstProject.children[2]; const completedTiming=completed.children[1].children[0].children[2];
+          app.renderFocused(bundle.projects[0].running[0],()=>app.renderAll(bundle,()=>{})); const graph=ids.get('graph'); const group=graph.children.find((child)=>child.attributes.class === 'node node-running'); group.listeners.click();
+          const detail=ids.get('node-detail').children.map((entry)=>entry.textContent); ids.get('back-button').listeners.click();
+          console.log(JSON.stringify({projectCount:ids.get('all-view').children.length, cardTag:runningCard.tagName, completedTag:completed.tagName, completedOpen:completed.open === true, completedRepaints:completedTiming.dataset.elapsed === 'true', selector:ids.get('session-selector').children.map((entry)=>entry.textContent), nodeRect:group.children[1].attributes, transform:group.attributes.transform, detail, title:group.children[0].textContent, allVisible:!ids.get('all-view').hidden, focusedHidden:ids.get('focused-view').hidden}));
+        """)
+        self.assertEqual(rendered["projectCount"], 2)
+        self.assertEqual(rendered["cardTag"], "button")
+        self.assertEqual(rendered["completedTag"], "details")
+        self.assertFalse(rendered["completedOpen"])
+        self.assertFalse(rendered["completedRepaints"])
+        self.assertEqual(rendered["selector"], ["All sessions", "Running A — /one", "Running B — /two"])
+        self.assertEqual(rendered["nodeRect"]["width"], "180")
+        self.assertEqual(rendered["nodeRect"]["height"], "62")
+        self.assertEqual(rendered["transform"], "translate(30 30)")
+        self.assertEqual(rendered["title"], "Complete safe subject without clipping")
+        self.assertEqual(rendered["detail"], ["Complete safe subject without clipping", "Complete safe description without clipping"])
+        self.assertTrue(rendered["allVisible"])
+        self.assertTrue(rendered["focusedHidden"])
 
 
 if __name__ == "__main__":
