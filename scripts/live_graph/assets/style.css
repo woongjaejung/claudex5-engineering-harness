@@ -1,0 +1,15 @@
+:root { color-scheme: dark; --ink:#e8eadf; --muted:#8c948c; --void:#080b0d; --panel:#101518; --line:#2c3738; --mint:#9be8c1; --orange:#ff7a45; }
+* { box-sizing:border-box; }
+body { margin:0; color:var(--ink); background:var(--void); font-family:"Avenir Next", "Segoe UI", sans-serif; }
+.masthead, .panel-heading, footer { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:22px clamp(22px,4vw,62px); border-bottom:1px solid var(--line); }
+.eyebrow, .run-strip span, footer { color:var(--mint); font:700 10px/1.2 monospace; letter-spacing:.15em; }
+h1, h2 { margin:0; font-weight:500; } h1 { font-size:36px; } h2 { font-size:18px; }
+.connection { border:1px solid var(--line); padding:10px 13px; color:var(--muted); font:700 10px/1 monospace; }
+.connection[data-state="connected"] { color:var(--mint); } .connection[data-state="disconnected"] { color:#ff5f5f; }
+main { padding:0 clamp(22px,4vw,62px) 48px; }
+.run-strip { display:grid; grid-template-columns:repeat(4,1fr); border:1px solid var(--line); border-top:0; background:var(--panel); }
+.run-strip > div { min-width:0; padding:15px 18px; border-right:1px solid var(--line); }.run-strip > div:last-child { border:0; }.run-strip strong { display:block; margin-top:7px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }
+.progress-track { height:3px; margin-top:9px; background:#252d2f; }.progress-track i { display:block; width:0; height:100%; background:var(--mint); transition:width .35s ease; }
+.workspace { display:grid; grid-template-columns:minmax(0,1fr) 238px; gap:18px; margin-top:28px; }.graph-panel,.side-card { border:1px solid var(--line); background:var(--panel); }.graph-panel { min-height:500px; }.panel-heading { padding:22px 24px; }.panel-heading>p { margin:0; color:var(--muted); font:10px/1.4 monospace; }
+#graph { display:none; width:100%; min-height:400px; } #graph.visible { display:block; }.empty-state { padding:100px 20px; text-align:center; color:var(--muted); }.empty-state.hidden { display:none; }.side-card { padding:19px; } #next-runnable { padding-left:24px; color:var(--muted); font-size:12px; } footer { border-top:1px solid var(--line); border-bottom:0; color:var(--muted); } #degraded.warning { color:var(--orange); }
+@media (max-width:700px) { .run-strip,.workspace { grid-template-columns:1fr; } }

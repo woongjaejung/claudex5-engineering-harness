@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claudex5 Live Graph</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.mjs"></script>
+</head>
+<body>
+  <header class="masthead">
+    <div><p class="eyebrow">CLAUDEX5 / LIVE ORCHESTRATION</p><h1>Flight graph</h1></div>
+    <div class="connection" id="connection" data-state="connecting" role="status" aria-live="polite"><span id="connection-text">CONNECTING</span></div>
+  </header>
+  <main>
+    <section class="run-strip" aria-label="Current run summary">
+      <div><span>RUN</span><strong id="run-id">Awaiting telemetry</strong></div>
+      <div><span>PROJECT</span><strong id="project">—</strong></div>
+      <div><span>STATE</span><strong id="run-state">—</strong></div>
+      <div><span>PROGRESS</span><strong id="progress-text">0 / 0</strong><div class="progress-track" aria-hidden="true"><i id="progress-bar"></i></div></div>
+    </section>
+    <section class="workspace">
+      <div class="graph-panel"><div class="panel-heading"><div><p class="eyebrow">NODE / EDGE TELEMETRY</p><h2>Active execution map</h2></div><p id="updated-at">No events received</p></div><div class="empty-state" id="empty-state"><p>Waiting for a Claudex5 run</p></div><svg id="graph" role="img" aria-label="Claudex5 task and agent dependency graph"></svg></div>
+      <aside><section class="side-card"><p class="eyebrow">QUEUE</p><h2>Next runnable</h2><ol id="next-runnable"><li>Waiting for graph data</li></ol></section></aside>
+    </section>
+  </main>
+  <footer><span>SINGLE EVENT STREAM</span><span>ZERO EXTERNAL ASSETS</span><span id="degraded">EVENT LOG HEALTHY</span></footer>
+</body>
+</html>

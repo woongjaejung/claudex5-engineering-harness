@@ -431,12 +431,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.command == "dashboard":
             selection = _resolve_dashboard_selection(store, arguments)
             if arguments.web:
-                if selection is not None and selection.mode == "all":
-                    raise ValueError("all-session web view requires the streaming web backend")
                 from scripts.live_graph.web import serve_dashboard
 
-                session_id = selection.session_id if selection and selection.mode == "session" else None
-                return serve_dashboard(store, session_id, arguments.host, arguments.port, not arguments.no_open)
+                return serve_dashboard(
+                    store, selection or SessionSelection.all(), arguments.host, arguments.port, not arguments.no_open
+                )
             if selection is None:
                 rendered = render_snapshot(
                     None,
