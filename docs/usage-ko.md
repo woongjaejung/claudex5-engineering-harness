@@ -53,6 +53,41 @@ Fable 5는 계속 계획의 소유자입니다. 다음 조건 중 하나라도 �
 
 단순하고 일상적인 계획은 이 단계를 건너뜁니다. 검토 결과는 `APPROVE` 또는 `NEEDS CHANGES`입니다. 수정이 필요하면 Fable이 한 번 고치고 새 Sol 맥락에서 한 번만 재검토합니다. 그래도 막는 문제가 남으면 구현 전에 멈추고 사용자에게 방향을 묻습니다. 백그라운드 작업 화면에서는 `[Codex Sol · high] Plan review`라는 이름으로 확인할 수 있습니다.
 
+## 실시간 노드·엣지 그래프 보기
+
+설치 뒤 새 Claude Code 세션부터 작업 생명주기(lifecycle, 작업이 생성·시작·종료되는 흐름)가 자동으로 기록됩니다. 기존 상단 상태줄, 서브에이전트 행, `/agents`, `/tasks`는 바꾸지 않으며 새 창이나 브라우저도 자동으로 열지 않습니다.
+
+두 번째 터미널에서 계속 갱신되는 그래프를 엽니다.
+
+```bash
+claudex5 dashboard
+```
+
+현재 상태를 한 번만 출력하거나 로컬 웹 그래프를 열 수도 있습니다.
+
+```bash
+claudex5 dashboard --once
+claudex5 dashboard --web
+```
+
+그래프에는 태스크·에이전트·리뷰·판정·품질 검증 노드, 의존성과 부모-자식 엣지, 현재 상태, 알려진 역할·모델·추론 수준이 표시됩니다. 자동 Codex 역할은 `claudex5 codex-run`, 프로젝트 품질 검증은 `claudex5 gate-run`을 사용하므로 실제 프로세스 성공·실패·중단 상태도 같은 그래프에 나타납니다. 수동 `/codex:*` 명령은 계속 쓸 수 있지만, 플러그인이 생명주기 정보를 제공할 때만 그래프에 나타나는 최선 노력 방식입니다.
+
+웹 서버는 기본적으로 `127.0.0.1:8765`에만 열립니다. 원격 컴퓨터나 서버에서는 웹 서버를 공개 주소에 바인딩하지 말고, 로컬 컴퓨터에서 SSH (Secure Shell, 원격 서버에 안전하게 연결하는 방식) 터널을 엽니다.
+
+```bash
+ssh -L 8765:127.0.0.1:8765 user@example-server
+```
+
+그다음 로컬 브라우저에서 `http://127.0.0.1:8765/`을 엽니다. 외부 자산과 분석 스크립트는 없으며 프롬프트, 코드, 명령, 도구 출력, 답변, transcript 경로, 환경 변수, 인증정보와 모델 목록은 수집하지 않습니다. 정제된 상태만 `${XDG_STATE_HOME:-~/.local/state}/claudex5-engineering-harness/runs` 아래에 디렉터리 `0700`, 파일 `0600` 권한으로 해당 머신에 저장됩니다.
+
+```bash
+claudex5 status --json
+claudex5 clean --days 7
+claudex5 clean --all
+```
+
+제거할 때 기록은 기본 보존됩니다. 화면이 비어 있으면 설치 뒤 Claude Code를 새로 시작합니다. 포트가 사용 중이면 `claudex5 dashboard --web --port 8766`처럼 다른 로컬 포트를 지정합니다.
+
 ## 설치
 
 이미 Claude Code와 Codex가 설치된 컴퓨터 또는 서버:
@@ -153,6 +188,18 @@ harness-architecture-reviewer로 현재 변경의 모듈 경계와 롤백 위험
 
 Claude Code 안에서 Codex를 새 맥락으로 호출:
 
+자동 하네스 작업을 그래프에 확실히 표시하려면 저장소 밖의 임시 프롬프트 파일과 고정 역할을 사용합니다.
+
+```bash
+claudex5 codex-run \
+  --role harness_sol_review \
+  --label "[Codex Sol · high] 독립 리뷰" \
+  --sandbox read-only \
+  --prompt-file /path/to/review-prompt.txt
+```
+
+사용 가능한 역할은 `harness_sol_plan_review`, `harness_sol_research`, `harness_luna_implementation`, `harness_sol_review`, `harness_sol_adversarial_review`, 그리고 조건부 `harness_spark_ui_iteration`입니다. 래퍼는 모델과 추론 수준을 고정하고 프롬프트를 저장하지 않으며 종료 신호와 실제 종료 상태를 그대로 전달합니다.
+
 ```text
 /codex:rescue --fresh --model gpt-5.6-sol --effort high [Codex Sol · high] Plan review: 전체 구현 계획을 읽기 전용으로 검토하고 APPROVE 또는 NEEDS CHANGES로 답해줘.
 /codex:rescue --fresh --model gpt-5.6-sol --effort high 이 문제의 원인과 대안을 독립 조사해줘
@@ -240,6 +287,7 @@ git pull --ff-only origin main
 사용자 지침과 기존 설정은 남기고, 이 저장소가 관리하는 링크·지침 블록·Codex 역할 표만 제거합니다. Claude, Codex, 로그인과 플러그인은 삭제하지 않습니다.
 조건부 Spark 링크와 역할 표도 하네스가 만든 경우에만 함께 제거합니다.
 모델 표시용 `subagentStatusLine`도 여전히 Claudex5 명령을 가리킬 때만 제거하며, 사용자가 다른 렌더러로 바꾼 설정은 보존합니다.
+그래프 실행 기록도 기본 보존합니다. 의도적으로 지우려면 제거 전에 `claudex5 clean --all`을 실행합니다.
 
 ## 문제 해결
 

@@ -228,6 +228,25 @@ PY
   esac
 fi
 
+if [[ -n "$python_bin" ]]; then
+  if HOME="$target_home" "$python_bin" - "$repo_root" <<'PY'
+import stat
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from scripts.live_graph.store import StateStore
+
+store = StateStore()
+store._ensure_root()
+raise SystemExit(0 if stat.S_IMODE(store.root.stat().st_mode) == 0o700 else 1)
+PY
+  then
+    pass "live graph private state root is writable with mode 0700"
+  else
+    fail "live graph private state root is unavailable or not mode 0700"
+  fi
+fi
+
 spark_link="$target_home/.codex/agents/harness-spark-ui-iteration.toml"
 spark_target="$repo_root/codex/agents/harness-spark-ui-iteration.toml"
 spark_link_installed=0
