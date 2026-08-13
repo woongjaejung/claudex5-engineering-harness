@@ -11,6 +11,7 @@ from pathlib import Path
 import scripts.merge_config as merge_config_module
 from scripts.plugin_registry import resolve_codex_helper
 from scripts.merge_config import (
+    CLAUDEX5_HOOK_GROUPS,
     END_MARKER,
     START_MARKER,
     merge_claude_settings,
@@ -55,7 +56,8 @@ class ClaudeSettingsTests(unittest.TestCase):
             merged = json.loads(path.read_text(encoding="utf-8"))
 
             self.assertEqual(merged["model"], "existing-model")
-            self.assertEqual(merged["hooks"]["Stop"], [{"command": "keep-me"}])
+            self.assertEqual(merged["hooks"]["Stop"][0], {"command": "keep-me"})
+            self.assertIn(CLAUDEX5_HOOK_GROUPS["Stop"], merged["hooks"]["Stop"])
             self.assertEqual(
                 merged["statusLine"], {"type": "command", "command": "keep-status"}
             )
@@ -72,6 +74,38 @@ class ClaudeSettingsTests(unittest.TestCase):
                 merged["extraKnownMarketplaces"]["openai-codex"]["source"]["repo"],
                 "openai/codex-plugin-cc",
             )
+
+    def test_hook_merge_is_idempotent_and_preserves_foreign_shapes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            foreign_current = {
+                "matcher": "Bash",
+                "hooks": [{"type": "command", "command": "~/.orca/hook.sh"}],
+            }
+            path.write_text(
+                json.dumps(
+                    {
+                        "hooks": {
+                            "SessionStart": [foreign_current],
+                            "Stop": [{"command": "legacy-hook"}],
+                        },
+                        "statusLine": {"type": "command", "command": "keep-status"},
+                        "subagentStatusLine": {"type": "command", "command": "keep-subagent"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            merge_claude_settings(path, enable_plugin=True)
+            merge_claude_settings(path, enable_plugin=True)
+            merged = json.loads(path.read_text(encoding="utf-8"))
+
+            self.assertEqual(merged["hooks"]["SessionStart"][0], foreign_current)
+            self.assertEqual(merged["hooks"]["Stop"][0], {"command": "legacy-hook"})
+            for event, owned in CLAUDEX5_HOOK_GROUPS.items():
+                self.assertEqual(merged["hooks"][event].count(owned), 1)
+            self.assertEqual(merged["statusLine"]["command"], "keep-status")
+            self.assertEqual(merged["subagentStatusLine"]["command"], "keep-subagent")
 
     def test_invalid_json_is_not_replaced(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -135,6 +169,67 @@ class ClaudeSettingsTests(unittest.TestCase):
                 self.assertEqual("subagentStatusLine" in result, should_remain)
                 if should_remain:
                     self.assertEqual(result["subagentStatusLine"], foreign)
+
+    def test_uninstall_removes_only_exact_owned_hook_groups(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / ".claude").mkdir()
+            settings_path = home / ".claude/settings.json"
+            foreign = {
+                "hooks": [{"type": "command", "command": "~/.claude/hooks/other.py"}]
+            }
+            settings_path.write_text("{}", encoding="utf-8")
+            merge_claude_settings(settings_path, enable_plugin=False)
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+            settings["hooks"]["Stop"].insert(0, foreign)
+            settings_path.write_text(json.dumps(settings), encoding="utf-8")
+
+            remove_harness_config(home)
+            result = json.loads(settings_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(result["hooks"]["Stop"], [foreign])
+            for event in CLAUDEX5_HOOK_GROUPS:
+                if event != "Stop":
+                    self.assertNotIn(event, result.get("hooks", {}))
+
+    def test_uninstall_rolls_back_every_owned_file_after_an_intermediate_write_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / ".claude").mkdir()
+            (home / ".codex").mkdir()
+            targets = (
+                home / ".claude" / "CLAUDE.md",
+                home / ".codex" / "AGENTS.md",
+                home / ".claude" / "settings.json",
+                home / ".codex" / "config.toml",
+            )
+            targets[0].write_text(
+                f"before\n{START_MARKER}\nmanaged\n{END_MARKER}\n", encoding="utf-8"
+            )
+            targets[1].write_text(
+                f"before codex\n{START_MARKER}\nmanaged\n{END_MARKER}\n", encoding="utf-8"
+            )
+            targets[2].write_text("{}\n", encoding="utf-8")
+            targets[3].write_text("personality = \"keep\"\n", encoding="utf-8")
+            originals = {path: path.read_bytes() for path in targets}
+            real_atomic_write = merge_config_module.atomic_write
+            calls = 0
+
+            def fail_second_write(path, text, mode=None):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("injected intermediate unmerge failure")
+                return real_atomic_write(path, text, mode)
+
+            with unittest.mock.patch.object(
+                merge_config_module, "atomic_write", side_effect=fail_second_write
+            ):
+                with self.assertRaisesRegex(OSError, "intermediate unmerge"):
+                    remove_harness_config(home)
+
+            self.assertGreaterEqual(calls, 3)
+            self.assertEqual({path: path.read_bytes() for path in targets}, originals)
 
 
 class CodexConfigTests(unittest.TestCase):
@@ -508,6 +603,20 @@ class TemplateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             log = root / "calls.log"
+            harness_log = root / "harness.log"
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake = fake_bin / "claudex5"
+            fake.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf '%q ' \"$@\" >> \"$HARNESS_LOG\"; printf '\\\\n' >> \"$HARNESS_LOG\"\n"
+                "if [[ \"${1:-}\" == event ]]; then exit 0; fi\n"
+                "while [[ $# -gt 0 && \"$1\" != -- ]]; do shift; done\n"
+                "[[ $# -gt 0 ]] && shift\n"
+                "exec \"$@\"\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
             package = {
                 "scripts": {
                     "lint": f"printf 'lint\\n' >> {log}",
@@ -519,11 +628,51 @@ class TemplateTests(unittest.TestCase):
             result = subprocess.run(
                 ["/bin/bash", str(gate)],
                 cwd=root,
-                env={**os.environ, "PATH": os.environ.get("PATH", "")},
+                env={
+                    **os.environ,
+                    "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+                    "HARNESS_LOG": str(harness_log),
+                    "CLAUDEX5_SESSION_ID": "quality-session",
+                },
                 check=False,
             )
             self.assertEqual(result.returncode, 0)
             self.assertEqual(log.read_text(encoding="utf-8"), "lint\ntest\n")
+            observed = harness_log.read_text(encoding="utf-8")
+            self.assertIn("event --session-id quality-session --type node.started", observed)
+            self.assertIn("gate-run --session-id quality-session", observed)
+            self.assertIn("--name lint", observed)
+            self.assertIn("--name test", observed)
+            self.assertIn("--type node.finished", observed)
+            self.assertIn("--state passed", observed)
+
+    def test_quality_gate_falls_back_when_graph_telemetry_cannot_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "calls.log"
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake = fake_bin / "claudex5"
+            fake.write_text("#!/usr/bin/env bash\nexit 70\n", encoding="utf-8")
+            fake.chmod(0o755)
+            (root / "package.json").write_text(
+                json.dumps({"scripts": {"lint": f"printf 'lint\\n' >> {log}"}}),
+                encoding="utf-8",
+            )
+            gate = self.repository / "project-template" / "scripts" / "quality-gate.sh"
+
+            result = subprocess.run(
+                ["/bin/bash", str(gate)],
+                cwd=root,
+                env={**os.environ, "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(log.read_text(encoding="utf-8"), "lint\n")
+            self.assertIn("graph telemetry could not start", result.stderr)
 
 
 class PluginRegistryTests(unittest.TestCase):

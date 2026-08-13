@@ -37,6 +37,8 @@ sources=(
   "$repo_root/claude/agents/harness-judge-opus.md"
   "$repo_root/claude/skills/claudex5-subagent-routing/SKILL.md"
   "$repo_root/claude/statuslines/claudex5-subagent-models.py"
+  "$repo_root/claude/hooks/claudex5-live-graph.py"
+  "$repo_root/bin/claudex5"
   "$repo_root/codex/agents/harness-sol-research.toml"
   "$repo_root/codex/agents/harness-sol-plan-review.toml"
   "$repo_root/codex/agents/harness-luna-implementation.toml"
@@ -54,6 +56,8 @@ destinations=(
   "$target_home/.claude/agents/harness-judge-opus.md"
   "$target_home/.claude/skills/claudex5-subagent-routing/SKILL.md"
   "$target_home/.claude/statuslines/claudex5-subagent-models.py"
+  "$target_home/.claude/hooks/claudex5-live-graph.py"
+  "$target_home/.local/bin/claudex5"
   "$target_home/.codex/agents/harness-sol-research.toml"
   "$target_home/.codex/agents/harness-sol-plan-review.toml"
   "$target_home/.codex/agents/harness-luna-implementation.toml"
@@ -90,7 +94,9 @@ if [[ "$remove_managed_spark" -eq 1 ]]; then
 fi
 
 mkdir -p \
+  "$target_home/.local/bin" \
   "$target_home/.claude/agents" \
+  "$target_home/.claude/hooks" \
   "$target_home/.claude/skills/claudex5-subagent-routing" \
   "$target_home/.claude/statuslines" \
   "$target_home/.codex/agents"

@@ -14,6 +14,48 @@ git -C "$fixture_repo" add README.md
 
 "$repo_root/verify.sh" --repo "$fixture_repo" --secrets-only
 
+python_bin="${CLAUDEX5_TEST_PYTHON:-$(command -v python3)}"
+PYTHONPATH="$repo_root" "$python_bin" - "$test_root" <<'PY'
+import json
+import os
+from pathlib import Path
+import stat
+import sys
+
+from scripts.live_graph.store import StateStore
+from scripts.live_graph.web import create_server
+
+root = Path(sys.argv[1]) / "private-state" / "runs"
+store = StateStore(root)
+store.append(
+    "security-session",
+    "session.started",
+    "session:security-session",
+    {"cwd": str(Path(sys.argv[1]) / "project")},
+)
+store.append(
+    "security-session",
+    "node.started",
+    "task:security",
+    {"kind": "task", "label": "Bearer " + "z" * 40},
+)
+assert stat.S_IMODE(root.stat().st_mode) == 0o700
+for path in root.rglob("*"):
+    if path.is_dir():
+        assert stat.S_IMODE(path.stat().st_mode) == 0o700
+    elif path.name != ".lock":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+persisted = b"\n".join(path.read_bytes() for path in root.rglob("*") if path.is_file())
+assert b"z" * 40 not in persisted
+assert b"[REDACTED]" in persisted
+try:
+    create_server(store, host="0.0.0.0", port=0)
+except ValueError:
+    pass
+else:
+    raise AssertionError("public dashboard bind must be rejected")
+PY
+
 printf '%s\n' '{}' > "$fixture_repo/auth.json"
 git -C "$fixture_repo" add -f auth.json
 if "$repo_root/verify.sh" --repo "$fixture_repo" --secrets-only >/dev/null 2>&1; then

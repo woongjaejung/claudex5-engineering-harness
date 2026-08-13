@@ -24,3 +24,8 @@ This project protects its own managed configuration workflow. It does not secure
 
 The installer intentionally does not read or copy Claude/Codex authentication files. `verify.sh` detects common credential formats but cannot prove that arbitrary prose contains no sensitive business data. Review every staged diff before publishing.
 
+The live graph recorder uses an allowlist. It stores only sanitized task labels, logical identifiers, lifecycle state, dependencies, and known role/model/effort metadata. It does not store prompts, code, shell commands, tool output, assistant messages, transcript paths, environment variables, authentication state, or model catalogs.
+
+Runtime graph data remains outside the repository under `${XDG_STATE_HOME:-~/.local/state}/claudex5-engineering-harness/runs`, with private directory and file permissions. It is not copied during installation and is preserved during uninstall unless the user explicitly runs `claudex5 clean --all`.
+
+The web dashboard accepts loopback hosts only, validates the request `Host` against its bound loopback address and port, and provides no public-bind override. Its fixed local assets use a restrictive Content Security Policy, disable caching and MIME sniffing, grant no cross-origin access, and load no content delivery network, analytics, font, or other remote asset. Use SSH port forwarding to view a remote machine's dashboard; do not expose its port publicly.

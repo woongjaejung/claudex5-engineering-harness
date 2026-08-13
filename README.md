@@ -207,6 +207,54 @@ Do not change behavior or data flow, and verify the result in the browser.
 
 If Spark is not available on that computer or server, the same request continues with the Sonnet implementer. Ordinary automatic routing does not stop merely because the optional model is absent.
 
+## Live node-and-edge dashboard
+
+New Claude Code sessions are collected automatically after installation. Collection is passive: it does not open another terminal or browser and does not replace `statusLine`, `subagentStatusLine`, `/agents`, or `/tasks`.
+
+```mermaid
+flowchart LR
+    CH["Claude lifecycle hooks"] --> R["Safe event recorder"]
+    CX["Observable Codex wrapper"] --> R
+    QG["Quality-gate wrapper"] --> R
+    R --> EL["Private append-only event log"]
+    EL --> SS["Atomic run snapshot"]
+    SS --> TV["Terminal graph"]
+    SS --> WV["Loopback web + SVG graph"]
+```
+
+Open a continuously updating terminal graph in a second terminal:
+
+```bash
+claudex5 dashboard
+```
+
+Print one snapshot, or open the local web graph:
+
+```bash
+claudex5 dashboard --once
+claudex5 dashboard --web
+```
+
+The graph shows task, agent, review, judge, and quality-gate nodes; dependency and parent-child edges; current state; and known role/model/effort. Automatic Codex roles use `claudex5 codex-run`, and project-template checks use `claudex5 gate-run`, so their real process exit states appear in the same graph. Manual `/codex:*` plugin calls remain supported but appear only when the plugin exposes enough lifecycle information.
+
+The web server accepts only loopback hosts and defaults to `127.0.0.1:8765`. On a remote computer or server, keep it bound there and create an SSH (Secure Shell) tunnel from your local computer:
+
+```bash
+ssh -L 8765:127.0.0.1:8765 user@example-server
+```
+
+Then open `http://127.0.0.1:8765/` locally. No external assets, analytics, prompts, code, commands, tool output, assistant messages, transcript paths, environment variables, credentials, or model catalogs are collected. Sanitized lifecycle state is stored with private permissions under `${XDG_STATE_HOME:-~/.local/state}/claudex5-engineering-harness/runs` and remains on that machine.
+
+Inspect or remove runtime history:
+
+```bash
+claudex5 status --json
+claudex5 clean --days 7
+claudex5 clean --all
+```
+
+Uninstall preserves this history by default. If the dashboard is empty, start a new Claude Code session after installation. If the web port is busy, choose another loopback port with `claudex5 dashboard --web --port 8766`.
+
 ## Explicit role calls
 
 Role names are escape hatches when you want exact routing; they are not required for normal use.
@@ -236,6 +284,18 @@ Use these only when Fable/Sonnet is unavailable, a prior role returned evidence 
 
 ### Independent Codex work from Claude Code
 
+For an automatically managed, graph-visible invocation, place the prompt in a temporary file outside the repository and use a fixed role:
+
+```bash
+claudex5 codex-run \
+  --role harness_sol_review \
+  --label "[Codex Sol · high] Independent review" \
+  --sandbox read-only \
+  --prompt-file /path/to/review-prompt.txt
+```
+
+Available role identifiers are `harness_sol_plan_review`, `harness_sol_research`, `harness_luna_implementation`, `harness_sol_review`, `harness_sol_adversarial_review`, and conditionally `harness_spark_ui_iteration`. The wrapper fixes the role's model and effort, passes the prompt only through standard input, records lifecycle metadata, forwards termination signals, and returns the child process status.
+
 Inside Claude Code, use the official plugin commands:
 
 ```text
@@ -247,7 +307,7 @@ Inside Claude Code, use the official plugin commands:
 /codex:result
 ```
 
-`--fresh` starts an independent Codex context instead of inheriting conclusions from a prior rescue thread.
+`--fresh` starts an independent Codex context instead of inheriting conclusions from a prior rescue thread. Manual plugin commands are best-effort observable in the live graph.
 
 When the installer reports that Spark is enabled, you can request its narrow route explicitly:
 
@@ -346,8 +406,7 @@ git pull --ff-only
 ./verify.sh --strict
 ```
 
-Agent definitions and the model-row renderer update immediately through their links; rerunning the installer refreshes managed instruction and configuration blocks.
-It also rechecks Spark access on that machine, enabling or removing only the harness-owned optional role as needed.
+Linked agent definitions, the model-row renderer, the `claudex5` command, and the hook update immediately. Rerunning the installer refreshes managed instructions and settings hooks, then reconciles the account-gated Spark role on that machine.
 
 ## Uninstall
 
@@ -358,6 +417,7 @@ cd /path/to/claudex5-engineering-harness
 
 This removes only Claudex5-managed links, instruction blocks, and Codex agent tables. It leaves Claude Code, Codex, the official plugin, authentication, user hooks, and unrelated configuration installed. The uninstaller creates a backup first.
 The `subagentStatusLine` entry is removed only when it still points to the Claudex5 renderer; a foreign replacement is preserved.
+Private dashboard history is preserved. Run `claudex5 clean --all` before uninstalling, or remove the reported state directory afterward, only when you intentionally want to delete it.
 
 ## Security
 

@@ -21,10 +21,18 @@ jobs:
           python-version: "3.11"
 
       - name: Check shell syntax
-        run: bash -n install.sh link.sh verify.sh uninstall.sh bootstrap-system.sh scripts/common.sh tests/*.sh
+        run: bash -n install.sh link.sh verify.sh uninstall.sh bootstrap-system.sh scripts/common.sh project-template/scripts/*.sh bin/claudex5 tests/*.sh
 
       - name: Run Python tests
         run: python3 -m unittest discover -s tests -v
+
+      - name: Check embedded dashboard JavaScript
+        run: |
+          python3 - <<'PY' > /tmp/claudex5-app.js
+          from scripts.live_graph.web import APP_JS
+          print(APP_JS)
+          PY
+          node --check /tmp/claudex5-app.js
 
       - name: Run isolated installation tests
         env:
