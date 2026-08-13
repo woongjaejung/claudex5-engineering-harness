@@ -53,7 +53,7 @@ def _parser() -> argparse.ArgumentParser:
     status.add_argument("--json", action="store_true")
 
     event = subparsers.add_parser("event", help="record an allowlisted lifecycle event")
-    event.add_argument("--session-id", required=True)
+    event.add_argument("--session-id")
     event.add_argument("--type", required=True, choices=(
         "session.started", "session.ended", "node.created", "node.started",
         "node.finished", "task.created", "task.updated", "edge.created", "checkpoint",
@@ -82,6 +82,7 @@ def _parser() -> argparse.ArgumentParser:
     gate_run = subparsers.add_parser("gate-run", help="run one deterministic quality gate")
     gate_run.add_argument("--session-id")
     gate_run.add_argument("--group-id")
+    gate_run.add_argument("--node-id")
     gate_run.add_argument("--name", required=True)
     gate_run.add_argument("--dependency", action="append", default=[])
     gate_run.add_argument("child", nargs=argparse.REMAINDER)
@@ -228,7 +229,7 @@ def _gate_run(arguments: argparse.Namespace, store: StateStore) -> int:
     if not child:
         raise ValueError("gate-run requires a child command after --")
     session_id = _session_id(store, arguments.session_id)
-    node_id = f"gate:{uuid4().hex}"
+    node_id = arguments.node_id or f"gate:{uuid4().hex}"
     group_id = arguments.group_id or f"quality:{uuid4().hex}"
     payload = {
         "kind": "quality_gate",
@@ -259,8 +260,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     store = StateStore()
     try:
         if arguments.command == "event":
+            session_id = _session_id(store, arguments.session_id)
             store.append(
-                arguments.session_id,
+                session_id,
                 arguments.type,
                 arguments.node_id,
                 _payload(arguments),

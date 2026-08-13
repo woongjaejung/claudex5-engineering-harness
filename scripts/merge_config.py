@@ -20,6 +20,26 @@ CLAUDEX5_SUBAGENT_STATUS_LINE = {
     "type": "command",
     "command": "~/.claude/statuslines/claudex5-subagent-models.py",
 }
+CLAUDEX5_HOOK_COMMAND = {
+    "type": "command",
+    "command": "~/.claude/hooks/claudex5-live-graph.py",
+    "timeout": 5,
+}
+CLAUDEX5_HOOK_GROUPS = {
+    "SessionStart": {"hooks": [dict(CLAUDEX5_HOOK_COMMAND)]},
+    "PreToolUse": {
+        "matcher": "TaskCreate",
+        "hooks": [dict(CLAUDEX5_HOOK_COMMAND)],
+    },
+    "PostToolUse": {
+        "matcher": "TaskUpdate",
+        "hooks": [dict(CLAUDEX5_HOOK_COMMAND)],
+    },
+    "SubagentStart": {"hooks": [dict(CLAUDEX5_HOOK_COMMAND)]},
+    "SubagentStop": {"hooks": [dict(CLAUDEX5_HOOK_COMMAND)]},
+    "Stop": {"hooks": [dict(CLAUDEX5_HOOK_COMMAND)]},
+    "SessionEnd": {"hooks": [dict(CLAUDEX5_HOOK_COMMAND)]},
+}
 
 BASE_CODEX_AGENT_FILES = {
     "harness_sol_research": "harness-sol-research.toml",
@@ -114,7 +134,7 @@ def merge_instruction_file(path: Path, managed_body: str) -> None:
 
 
 def merge_claude_settings(path: Path, enable_plugin: bool, harden: bool = False) -> list[str]:
-    """Merge only official Codex plugin registration into Claude settings."""
+    """Merge Claudex5-owned settings while retaining foreign values verbatim."""
     assert_safe_target(path)
     existing = path.read_text(encoding="utf-8") if path.exists() else "{}"
     settings = json.loads(existing)
@@ -122,6 +142,15 @@ def merge_claude_settings(path: Path, enable_plugin: bool, harden: bool = False)
         raise ValueError("Claude settings root must be a JSON object")
 
     warnings: list[str] = []
+    hooks = settings.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        raise ValueError("hooks must be a JSON object")
+    for event, owned_group in CLAUDEX5_HOOK_GROUPS.items():
+        groups = hooks.setdefault(event, [])
+        if not isinstance(groups, list):
+            raise ValueError(f"hooks.{event} must be a JSON array")
+        if owned_group not in groups:
+            groups.append(owned_group)
     if "subagentStatusLine" not in settings:
         settings["subagentStatusLine"] = dict(CLAUDEX5_SUBAGENT_STATUS_LINE)
     elif settings["subagentStatusLine"] != CLAUDEX5_SUBAGENT_STATUS_LINE:
@@ -291,8 +320,26 @@ def remove_harness_config(home: Path) -> None:
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
         if not isinstance(settings, dict):
             raise ValueError("Claude settings root must be a JSON object")
+        changed = False
+        hooks = settings.get("hooks")
+        if isinstance(hooks, dict):
+            for event, owned_group in CLAUDEX5_HOOK_GROUPS.items():
+                groups = hooks.get(event)
+                if not isinstance(groups, list):
+                    continue
+                retained = [group for group in groups if group != owned_group]
+                if retained != groups:
+                    changed = True
+                if retained:
+                    hooks[event] = retained
+                else:
+                    hooks.pop(event, None)
+            if not hooks:
+                settings.pop("hooks", None)
         if settings.get("subagentStatusLine") == CLAUDEX5_SUBAGENT_STATUS_LINE:
             del settings["subagentStatusLine"]
+            changed = True
+        if changed:
             atomic_write(
                 settings_path,
                 json.dumps(settings, indent=2, ensure_ascii=False) + "\n",
@@ -374,6 +421,8 @@ def main() -> int:
         ):
             print(f"WARNING: {warning}")
     else:
+        if os.environ.get("CLAUDEX5_UNINSTALL_FAIL") == "1":
+            raise RuntimeError("injected uninstall failure")
         remove_harness_config(home)
     return 0
 

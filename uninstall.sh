@@ -26,18 +26,22 @@ target_home="$(claudex5_validate_home "$target_home")"
 python_bin="$(claudex5_find_python)" || claudex5_die "Python 3.11 or newer is required"
 
 backup_dir="$(claudex5_backup_configs "$target_home")"
+# Remove settings and instruction ownership first. If this fails, every link
+# remains usable and the installation is not left half-removed.
+"$python_bin" "$repo_root/scripts/merge_config.py" uninstall --home "$target_home" --repo "$repo_root"
 for path in \
+  "$target_home/.local/bin/claudex5" \
   "$target_home/.claude/agents"/harness-*.md \
+  "$target_home/.claude/hooks/claudex5-live-graph.py" \
   "$target_home/.claude/skills/claudex5-subagent-routing/SKILL.md" \
   "$target_home/.claude/statuslines/claudex5-subagent-models.py" \
   "$target_home/.codex/agents"/harness-*.toml; do
   [[ -L "$path" ]] || continue
   target="$(readlink "$path")"
   case "$target" in
-    "$repo_root"/claude/agents/*|"$repo_root"/claude/skills/*|"$repo_root"/claude/statuslines/*|"$repo_root"/codex/agents/*) rm -f "$path" ;;
+    "$repo_root"/bin/*|"$repo_root"/claude/agents/*|"$repo_root"/claude/hooks/*|"$repo_root"/claude/skills/*|"$repo_root"/claude/statuslines/*|"$repo_root"/codex/agents/*) rm -f "$path" ;;
     *) claudex5_warn "foreign harness-named link preserved: $path" ;;
   esac
 done
-"$python_bin" "$repo_root/scripts/merge_config.py" uninstall --home "$target_home" --repo "$repo_root"
 claudex5_info "harness-managed files and instruction blocks removed"
 claudex5_info "backup: $backup_dir"

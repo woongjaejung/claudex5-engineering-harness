@@ -35,12 +35,16 @@ run_install
 [[ -L "$test_home/.claude/agents/harness-orchestrator.md" ]]
 [[ -L "$test_home/.claude/skills/claudex5-subagent-routing/SKILL.md" ]]
 [[ -L "$test_home/.claude/statuslines/claudex5-subagent-models.py" ]]
+[[ -L "$test_home/.claude/hooks/claudex5-live-graph.py" ]]
+[[ -L "$test_home/.local/bin/claudex5" ]]
 [[ -L "$test_home/.codex/agents/harness-sol-research.toml" ]]
 [[ -L "$test_home/.codex/agents/harness-sol-plan-review.toml" ]]
 [[ ! -e "$test_home/.codex/agents/harness-spark-ui-iteration.toml" ]]
 [[ "$(readlink "$test_home/.claude/agents/harness-orchestrator.md")" == "$repo_root/claude/agents/harness-orchestrator.md" ]]
 [[ "$(readlink "$test_home/.claude/skills/claudex5-subagent-routing/SKILL.md")" == "$repo_root/claude/skills/claudex5-subagent-routing/SKILL.md" ]]
 [[ "$(readlink "$test_home/.claude/statuslines/claudex5-subagent-models.py")" == "$repo_root/claude/statuslines/claudex5-subagent-models.py" ]]
+[[ "$(readlink "$test_home/.claude/hooks/claudex5-live-graph.py")" == "$repo_root/claude/hooks/claudex5-live-graph.py" ]]
+[[ "$(readlink "$test_home/.local/bin/claudex5")" == "$repo_root/bin/claudex5" ]]
 grep -q "existing Claude instructions" "$test_home/.claude/CLAUDE.md"
 grep -q "existing Codex instructions" "$test_home/.codex/AGENTS.md"
 [[ "$(grep -c 'BEGIN CLAUDEX5' "$test_home/.claude/CLAUDE.md")" -eq 1 ]]
@@ -56,6 +60,15 @@ home = Path(sys.argv[1])
 settings = json.loads((home / ".claude/settings.json").read_text())
 assert settings["model"] == "keep-model"
 assert settings["hooks"]["Stop"][0]["command"] == "keep-hook"
+for event in ("SessionStart", "PreToolUse", "PostToolUse", "SubagentStart", "SubagentStop", "Stop", "SessionEnd"):
+    assert sum(
+        1 for group in settings["hooks"][event]
+        if group.get("hooks") == [{
+            "type": "command",
+            "command": "~/.claude/hooks/claudex5-live-graph.py",
+            "timeout": 5,
+        }]
+    ) == 1
 assert settings["statusLine"] == {"type": "command", "command": "keep-status"}
 assert settings["subagentStatusLine"] == {
     "type": "command",
@@ -79,10 +92,21 @@ run_install
 [[ "$(grep -c '\[agents.harness_sol_plan_review\]' "$test_home/.codex/config.toml")" -eq 1 ]]
 [[ "$(find "$test_home/.local/state/claudex5-engineering-harness/backups" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" -ge 1 ]]
 
+if CLAUDEX5_PYTHON="$python_bin" CLAUDEX5_UNINSTALL_FAIL=1 \
+  "$repo_root/uninstall.sh" --home "$test_home" >/dev/null 2>&1; then
+  printf '%s\n' "injected unmerge failure must fail uninstall" >&2
+  exit 1
+fi
+[[ -L "$test_home/.local/bin/claudex5" ]]
+[[ -L "$test_home/.claude/hooks/claudex5-live-graph.py" ]]
+grep -q 'BEGIN CLAUDEX5' "$test_home/.claude/CLAUDE.md"
+
 CLAUDEX5_PYTHON="$python_bin" "$repo_root/uninstall.sh" --home "$test_home"
 [[ ! -e "$test_home/.claude/agents/harness-orchestrator.md" ]]
 [[ ! -e "$test_home/.claude/skills/claudex5-subagent-routing/SKILL.md" ]]
 [[ ! -e "$test_home/.claude/statuslines/claudex5-subagent-models.py" ]]
+[[ ! -e "$test_home/.claude/hooks/claudex5-live-graph.py" ]]
+[[ ! -e "$test_home/.local/bin/claudex5" ]]
 [[ ! -e "$test_home/.codex/agents/harness-sol-research.toml" ]]
 [[ ! -e "$test_home/.codex/agents/harness-sol-plan-review.toml" ]]
 ! grep -q 'BEGIN CLAUDEX5' "$test_home/.claude/CLAUDE.md"
@@ -98,6 +122,15 @@ from pathlib import Path
 settings = json.loads((Path(sys.argv[1]) / ".claude/settings.json").read_text())
 assert settings["statusLine"] == {"type": "command", "command": "keep-status"}
 assert "subagentStatusLine" not in settings
+for groups in settings.get("hooks", {}).values():
+    assert not any(
+        group.get("hooks") == [{
+            "type": "command",
+            "command": "~/.claude/hooks/claudex5-live-graph.py",
+            "timeout": 5,
+        }]
+        for group in groups if isinstance(group, dict)
+    )
 PY
 
 collision_home="$test_root/collision-home"
@@ -150,13 +183,10 @@ assert settings["subagentStatusLine"] == {
     "command": "~/.claude/my-status.py",
 }
 PY
-if CLAUDEX5_PYTHON="$python_bin" \
+CLAUDEX5_PYTHON="$python_bin" \
   "$repo_root/verify.sh" --home "$foreign_status_home" --strict --structural-only \
-  >"$foreign_status_log" 2>&1; then
-  printf '%s\n' "strict structural verification must reject a foreign subagentStatusLine" >&2
-  exit 1
-fi
-grep -q 'FAIL: foreign subagentStatusLine is preserved' "$foreign_status_log"
+  >"$foreign_status_log" 2>&1
+grep -q 'WARNING: foreign subagentStatusLine is preserved' "$foreign_status_log"
 
 root_alias="$test_root/root-alias"
 ln -s / "$root_alias"

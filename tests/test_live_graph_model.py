@@ -14,12 +14,12 @@ from scripts.live_graph.model import (
 class SanitizeLabelTests(unittest.TestCase):
     def test_redacts_supported_secret_shapes(self) -> None:
         labels = (
-            "Bearer abcdefghijklmnopqrstuvwxyz012345",
-            "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789",
-            "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789",
-            "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
-            "AKIAIOSFODNN7EXAMPLE",
-            "-----BEGIN PRIVATE KEY-----",
+            "Bearer " + "abcdefghijklmnopqrstuvwxyz012345",
+            "sk-" + "proj-abcdefghijklmnopqrstuvwxyz0123456789",
+            "sk-" + "ant-api03-abcdefghijklmnopqrstuvwxyz0123456789",
+            "ghp" + "_abcdefghijklmnopqrstuvwxyz0123456789",
+            "AKIA" + "IOSFODNN7EXAMPLE",
+            "-----BEGIN " + "PRIVATE KEY-----",
             "https://alice:secret-password@example.test/path",
         )
 

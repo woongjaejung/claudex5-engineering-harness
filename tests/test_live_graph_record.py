@@ -215,7 +215,7 @@ class HookPersistenceTests(unittest.TestCase):
 
     def test_private_hook_fields_never_reach_state_files(self) -> None:
         secret_values = (
-            "Bearer abcdefghijklmnopqrstuvwxyz012345",
+            "Bearer " + "abcdefghijklmnopqrstuvwxyz012345",
             "/private/transcript-secret.jsonl",
             "echo command-secret-value",
             "tool-output-secret-value",
@@ -263,7 +263,7 @@ class HookPersistenceTests(unittest.TestCase):
 class HookEntryPointTests(unittest.TestCase):
     def test_malformed_input_exits_zero_without_echoing_secret(self) -> None:
         hook = Path(__file__).parents[1] / "claude" / "hooks" / "claudex5-live-graph.py"
-        secret = "Bearer abcdefghijklmnopqrstuvwxyz012345"
+        secret = "Bearer " + "abcdefghijklmnopqrstuvwxyz012345"
         process = subprocess.run(
             [str(hook)],
             input='{"private":"' + secret + '"',

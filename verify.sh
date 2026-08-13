@@ -154,6 +154,8 @@ done
 
 expected_links=(
   "$target_home/.claude/statuslines/claudex5-subagent-models.py:$repo_root/claude/statuslines/claudex5-subagent-models.py"
+  "$target_home/.claude/hooks/claudex5-live-graph.py:$repo_root/claude/hooks/claudex5-live-graph.py"
+  "$target_home/.local/bin/claudex5:$repo_root/bin/claudex5"
   "$target_home/.claude/skills/claudex5-subagent-routing/SKILL.md:$repo_root/claude/skills/claudex5-subagent-routing/SKILL.md"
   "$target_home/.claude/agents/harness-orchestrator.md:$repo_root/claude/agents/harness-orchestrator.md"
   "$target_home/.claude/agents/harness-researcher.md:$repo_root/claude/agents/harness-researcher.md"
@@ -175,6 +177,23 @@ for mapping in "${expected_links[@]}"; do
 done
 
 if [[ -n "$python_bin" && -f "$target_home/.claude/settings.json" ]]; then
+  if "$python_bin" - "$target_home/.claude/settings.json" "$repo_root" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+settings = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+sys.path.insert(0, sys.argv[2])
+from scripts.merge_config import CLAUDEX5_HOOK_GROUPS
+
+hooks = settings.get("hooks", {})
+raise SystemExit(0 if all(hooks.get(event, []).count(group) == 1 for event, group in CLAUDEX5_HOOK_GROUPS.items()) else 1)
+PY
+  then
+    pass "Claudex5 lifecycle hooks are installed exactly once"
+  else
+    fail "Claudex5 lifecycle hooks are missing or duplicated; rerun ./install.sh"
+  fi
   subagent_status_state="$($python_bin - "$target_home/.claude/settings.json" <<'PY'
 import json
 import sys
@@ -204,11 +223,7 @@ PY
       fi
       ;;
     foreign)
-      if [[ "$strict" -eq 1 ]]; then
-        fail "foreign subagentStatusLine is preserved; Claudex5 model labels are not active"
-      else
-        warn "foreign subagentStatusLine is preserved; Claudex5 model labels are not active"
-      fi
+      warn "foreign subagentStatusLine is preserved; Claudex5 model labels are not active"
       ;;
   esac
 fi

@@ -7,13 +7,15 @@ description: Use when Superpowers subagent-driven-development or executing-plans
 
 ## Ownership
 
-Keep Superpowers responsible for process mechanics: plan reading, worktree choice, task ledger, task-by-task execution, checkpoints, and review gates. Claudex5 owns every model and agent choice. Once a Superpowers execution mode is selected, load this adapter and start that workflow without asking for a second mode choice.
+Superpowers owns plan reading, worktree choice, task ledger, execution, checkpoints, and review gates. Claudex5 owns model and agent choice. After selecting a Superpowers mode, load this adapter and start without asking again.
 
-The main Claude session retains requirements, architecture, task boundaries, integration, verification, and the final report. It must inspect every delegated result.
+The main Claude session retains requirements, architecture, boundaries, integration, verification, and the final report. Inspect every delegated result.
 
 ## Review Plans Before Implementation
 
 Fable remains the plan owner. Run fresh, read-only `harness_sol_plan_review` with `gpt-5.6-sol` high when a plan crosses multiple modules or services; covers authentication, authorization, security, data migration, or destructive state; has difficult rollback, material architecture change, or high operational risk; is ambiguous or has multiple viable approaches; or contains five or more executable tasks. Skip simple plans. Use `[Codex Sol · high] Plan review` as the visible title and require `APPROVE` or `NEEDS CHANGES`. On changes, Fable revises and requests one fresh recheck. If it still blocks, stop before implementation and ask the user.
+
+When `claudex5` is available, run automatic Codex roles through `claudex5 codex-run --role ROLE --label LABEL --sandbox MODE --prompt-file FILE`; it records lifecycle metadata but never the prompt. Use `harness_sol_plan_review`, `harness_sol_research`, `harness_luna_implementation`, `harness_sol_review`, `harness_sol_adversarial_review`, or capability-gated `harness_spark_ui_iteration`. Use `read-only` for research and reviews and the narrowest writable sandbox for implementation. Preserve manual `/codex:*` commands as best-effort observability only.
 
 ## Route Each Workflow Role
 
@@ -24,9 +26,9 @@ Fable remains the plan owner. Run fresh, read-only `harness_sol_plan_review` wit
 5. Use `gpt-5.6-luna` max only for a bounded alternative implementation with explicit file ownership and acceptance criteria. It is never the default implementer. Use `[Codex Luna · max]` as its visible task prefix; use `[Codex-Spark]` for an eligible Spark pass.
 6. Use `harness-architecture-reviewer` after architecture-significant changes.
 7. Use `harness-judge` to reconcile conflicting evidence. Use its Opus fallback only when Fable is unavailable or the decision is high risk.
-8. Finish with the repository's applicable deterministic `build`, `lint`, `typecheck`, and `test` commands. Language-model review never replaces these gates.
+8. Finish with the repository's applicable deterministic `build`, `lint`, `typecheck`, and `test` commands. Run each through `claudex5 gate-run --name NAME -- COMMAND` when available. Language-model review never replaces these gates.
 
-Use fresh review contexts and keep concurrent writers in non-overlapping files or isolated worktrees.
+Use fresh review contexts and non-overlapping writers.
 
 ## Exclude Competing Routers
 

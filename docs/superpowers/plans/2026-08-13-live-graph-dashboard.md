@@ -135,7 +135,7 @@ Resolve the real repository from `Path(__file__).resolve()`, add it to `sys.path
 
 ```bash
 "$PYTHON_BIN" -m unittest tests.test_live_graph_record -v
-printf '%s' '{"private":"bearer abcdefghijklmnopqrstuvwxyz"' | claude/hooks/claudex5-live-graph.py 2>&1 | grep -v 'abcdefghijklmnopqrstuvwxyz'
+"$PYTHON_BIN" -m unittest tests.test_live_graph_record.HookEntryPointTests -v
 ```
 
 - [ ] **Step 6: Commit Task 2**
