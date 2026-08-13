@@ -85,6 +85,57 @@ class WebDashboardAssetTests(unittest.TestCase):
         self.assertFalse(rendered["rejectsOld"])
         self.assertFalse(rendered["rejectsHealthy"])
 
+    def test_bare_root_defaults_to_all_and_node_duration_obeys_lifecycle_evidence(self) -> None:
+        rendered = run_app_script("""
+          const app=await import(process.env.APP_URL); const now=new Date('2026-08-14T12:00:00Z');
+          const samples={
+            waiting:{state:'waiting',created_at:'2026-08-14T11:59:30Z'},
+            running:{state:'running',started_at:'2026-08-14T11:59:00Z'},
+            terminal:{state:'passed',started_at:'2026-08-14T11:58:00Z',finished_at:'2026-08-14T11:59:45Z'},
+            taskFallback:{kind:'task',state:'passed',created_at:'2026-08-14T11:58:00Z',finished_at:'2026-08-14T11:59:45Z'},
+            degraded:{kind:'task',degraded:true,state:'passed',created_at:'2026-08-14T11:58:00Z',finished_at:'2026-08-14T11:59:45Z'},
+            inverted:{state:'running',started_at:'2026-08-14T12:00:01Z'},
+          };
+          console.log(JSON.stringify({bare:app.queryFromLocation({search:''}), explicit:app.queryFromLocation({search:'?selection=all'}), durations:Object.fromEntries(Object.entries(samples).map(([key,node])=>[key,app.nodeDuration(node,now)]))}));
+        """)
+        self.assertEqual(rendered["bare"], "selection=all")
+        self.assertEqual(rendered["explicit"], "selection=all")
+        self.assertEqual(rendered["durations"], {
+            "waiting": "00:00:30", "running": "00:01:00", "terminal": "00:01:45",
+            "taskFallback": "00:01:45", "degraded": "duration unknown", "inverted": "duration unknown",
+        })
+
+    def test_timeout_aborts_poll_and_selection_without_user_error_then_recovers(self) -> None:
+        rendered = run_app_script("""
+          const {createTransport,createSelectionController,FETCH_TIMEOUT_MS}=await import(process.env.APP_URL);
+          const jobs=[]; let serial=0; const timers={setTimeout(fn,delay){const job={id:++serial,fn,delay,cleared:false};jobs.push(job);return job.id},clearTimeout(id){const job=jobs.find((x)=>x.id===id);if(job)job.cleared=true}};
+          const polls=[]; const pollFetch=(_url,{signal}={})=>new Promise((_resolve,reject)=>{polls.push(signal);signal.addEventListener('abort',()=>reject(new DOMException('timeout','AbortError')),{once:true})});
+          function Offline(){throw new Error('offline')}; const transport=createTransport({EventSourceImpl:Offline,fetchImpl:pollFetch,timers}); transport.open('selection=all',1);
+          jobs.find((job)=>job.delay===FETCH_TIMEOUT_MS&&!job.cleared).fn(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+          transport.startFallbackPolling(1,true);
+          const errors=[]; const requests=[]; const controller=createSelectionController({timers,fetchImpl:(_url,{signal}={})=>new Promise((_resolve,reject)=>{requests.push(signal);signal.addEventListener('abort',()=>reject(new DOMException('timeout','AbortError')),{once:true})}),transport:{open(){},close(){}},onError:(value)=>errors.push(value)});
+          const selected=controller.select('session=slow'); jobs.filter((job)=>job.delay===FETCH_TIMEOUT_MS&&!job.cleared).at(-1).fn(); await selected;
+          console.log(JSON.stringify({FETCH_TIMEOUT_MS,polls:polls.length,pollAborted:polls[0].aborted,state:transport.state(),requests:requests.length,selectionAborted:requests[0].aborted,errors}));
+        """)
+        self.assertEqual(rendered["FETCH_TIMEOUT_MS"], 4000)
+        self.assertEqual(rendered["polls"], 2)
+        self.assertTrue(rendered["pollAborted"])
+        self.assertTrue(rendered["state"]["pollingInFlight"])
+        self.assertEqual(rendered["requests"], 1)
+        self.assertTrue(rendered["selectionAborted"])
+        self.assertEqual(rendered["errors"], [])
+
+    def test_bootstrap_timeout_starts_all_selection_recovery_transport(self) -> None:
+        rendered = run_app_script("""
+          const {bootstrapDashboard,FETCH_TIMEOUT_MS}=await import(process.env.APP_URL); const jobs=[]; let serial=0; const calls=[];
+          const timers={setTimeout(fn,delay){const job={id:++serial,fn,delay,cleared:false};jobs.push(job);return job.id},clearTimeout(id){const job=jobs.find((x)=>x.id===id);if(job)job.cleared=true}};
+          const fetchImpl=(_url,{signal}={})=>new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(new DOMException('timeout','AbortError')),{once:true}));
+          bootstrapDashboard({query:'selection=all',fetchImpl,timers,controller:{seed:(query)=>calls.push(['seed',query]),start:(query)=>calls.push(['start',query])},onInitialFailure:()=>calls.push(['connection','reconnecting'])});
+          jobs.find((job)=>job.delay===FETCH_TIMEOUT_MS).fn(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+          console.log(JSON.stringify({calls}));
+        """)
+        self.assertEqual(rendered["calls"], [["connection", "reconnecting"], ["start", "selection=all"]])
+
     def test_transport_keeps_one_stream_falls_back_and_stops_polling_on_sse(self) -> None:
         rendered = run_app_script("""
           const {createTransport} = await import(process.env.APP_URL);

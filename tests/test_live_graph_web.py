@@ -139,6 +139,27 @@ class WebDashboardTests(unittest.TestCase):
         self.assertEqual(all_sessions["projects"][0]["running"][0]["session_id"], "selected-session")
         self.assertEqual(store.snapshots_calls, 3)
 
+    def test_all_snapshot_retains_every_completed_session(self) -> None:
+        first = dict(SAMPLE_SNAPSHOT, session_id="completed-one", status="passed", sequence=1)
+        second = dict(SAMPLE_SNAPSHOT, session_id="completed-two", status="failed", sequence=2)
+        store = MemoryStore()
+        store.snapshot = None
+        store.snapshots = lambda: [first, second]  # type: ignore[method-assign]
+        with running_server(store) as base_url:
+            with urlopen(base_url + "/api/snapshot?selection=all") as response:
+                all_sessions = json.loads(response.read().decode("utf-8"))
+            with urlopen(base_url + "/api/snapshot?session=completed-one") as response:
+                focused = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(
+            {item["session_id"] for item in all_sessions["projects"][0]["completed"]},
+            {"completed-one", "completed-two"},
+        )
+        self.assertEqual(
+            [item["session_id"] for item in focused["projects"][0]["completed"]],
+            ["completed-one"],
+        )
+
     def test_rejects_foreign_host_header_before_reading_selection_or_storage(self) -> None:
         store = MemoryStore()
         with running_server(store) as base_url:

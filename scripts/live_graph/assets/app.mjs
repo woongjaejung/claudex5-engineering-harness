@@ -4,6 +4,8 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 const TERMINAL = new Set(["passed", "failed", "blocked", "skipped", "interrupted"]);
 const SATISFIED = new Set(["passed", "skipped"]);
 const STATES = new Set(["waiting", "running", ...TERMINAL]);
+// Four seconds bounds every snapshot read while leaving the five-second recovery cadence distinct.
+export const FETCH_TIMEOUT_MS = 4000;
 const byId = (id) => document.getElementById(id);
 
 function safeText(value) {
@@ -23,11 +25,25 @@ function parseTime(value) {
 export function formatDuration(startedAt, now = new Date()) {
   const start = parseTime(startedAt);
   const finish = now instanceof Date ? now.getTime() : (Number.isFinite(Number(now)) ? Number(now) : parseTime(now));
-  if (start === null || !Number.isFinite(finish)) return "—";
-  const seconds = Math.max(0, Math.floor((finish - start) / 1000));
+  if (start === null || !Number.isFinite(finish) || finish < start) return "duration unknown";
+  const seconds = Math.floor((finish - start) / 1000);
   const hours = String(Math.floor(seconds / 3600)).padStart(2, "0");
   const minutes = String(Math.floor((seconds % 3600) / 60)).padStart(2, "0");
   return `${hours}:${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+export function nodeDuration(node, now = new Date()) {
+  const state = safeText(node?.state);
+  let startedAt = null;
+  let finishedAt = null;
+  if (state === "waiting") { startedAt = node?.created_at; finishedAt = now; }
+  else if (state === "running") { startedAt = node?.started_at; finishedAt = now; }
+  else if (TERMINAL.has(state)) {
+    startedAt = node?.started_at;
+    if (!startedAt && node?.kind === "task" && !node?.degraded) startedAt = node?.created_at;
+    finishedAt = node?.finished_at;
+  } else return "duration unknown";
+  return formatDuration(startedAt, finishedAt);
 }
 
 function formatAge(updatedAt, now = new Date()) {
@@ -89,6 +105,31 @@ function normaliseQuery(query) {
   return String(query || "selection=all");
 }
 
+function isAbortError(error, controller) {
+  return controller?.signal?.aborted || error?.name === "AbortError";
+}
+
+function snapshotRequest(fetchImpl, query, timers = globalThis) {
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  let timer = null;
+  let settled = false;
+  const abort = () => {
+    if (settled) return;
+    controller?.abort();
+    if (timer !== null) timers.clearTimeout(timer);
+  };
+  let response;
+  try { response = fetchImpl?.(`/api/snapshot?${query}`, controller ? {signal: controller.signal} : {}); }
+  catch (error) { response = Promise.reject(error); }
+  const promise = Promise.resolve(response);
+  timer = timers.setTimeout(abort, FETCH_TIMEOUT_MS);
+  promise.then(
+    () => { settled = true; if (timer !== null) timers.clearTimeout(timer); },
+    () => { settled = true; if (timer !== null) timers.clearTimeout(timer); },
+  );
+  return {promise, controller, abort};
+}
+
 export function createTransport({EventSourceImpl, fetchImpl, timers = globalThis, onBundle = () => {}, onConnection = () => {}, onElapsed = () => {}, onInitialFailure = () => {}} = {}) {
   let selectionGeneration = 0;
   let stream = null;
@@ -102,12 +143,12 @@ export function createTransport({EventSourceImpl, fetchImpl, timers = globalThis
   let activeSourceAttempt = 0;
   let pollAttempt = 0;
   let pollInFlight = false;
-  let pollController = null;
+  let pollRequest = null;
 
   const clear = (id) => { if (id !== null) timers.clearTimeout(id); };
   const clearTimers = () => { clear(fallbackTimer); clear(retryTimer); clear(elapsedTimer); fallbackTimer = retryTimer = elapsedTimer = null; };
   const closeStream = () => { activeSourceAttempt = ++sourceAttempt; if (stream && typeof stream.close === "function") stream.close(); stream = null; };
-  const abortPoll = () => { pollAttempt += 1; if (pollController?.abort) pollController.abort(); pollController = null; pollInFlight = false; };
+  const abortPoll = () => { pollAttempt += 1; pollRequest?.abort(); pollRequest = null; pollInFlight = false; };
   const scheduleElapsed = () => {
     clear(elapsedTimer);
     elapsedTimer = timers.setTimeout(() => { if (!stopped) { onElapsed(); scheduleElapsed(); } }, 1000);
@@ -123,10 +164,10 @@ export function createTransport({EventSourceImpl, fetchImpl, timers = globalThis
   const poll = (generation) => {
     if (generation !== selectionGeneration || stopped || pollInFlight) return;
     const attempt = ++pollAttempt;
-    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    const request = snapshotRequest(fetchImpl, query, timers);
     pollInFlight = true;
-    pollController = controller;
-    Promise.resolve(fetchImpl?.(`/api/snapshot?${query}`, controller ? {signal: controller.signal} : {})).then(async (response) => {
+    pollRequest = request;
+    request.promise.then(async (response) => {
       if (!response?.ok || !canApplyPollResult(selectionGeneration, generation, streamHealthy)) return;
       const bundle = await response.json();
       if (attempt !== pollAttempt || !canApplyPollResult(selectionGeneration, generation, streamHealthy) || stopped) return;
@@ -134,7 +175,7 @@ export function createTransport({EventSourceImpl, fetchImpl, timers = globalThis
     }).catch(() => {}).finally(() => {
       if (attempt !== pollAttempt) return;
       pollInFlight = false;
-      if (pollController === controller) pollController = null;
+      if (pollRequest === request) pollRequest = null;
       if (generation === selectionGeneration && !stopped && !streamHealthy) {
         clear(fallbackTimer);
         fallbackTimer = timers.setTimeout(() => poll(generation), 5000);
@@ -193,13 +234,14 @@ export function createTransport({EventSourceImpl, fetchImpl, timers = globalThis
   };
 }
 
-export function createSelectionController({fetchImpl, transport, apply = () => {}, sync = () => {}, refreshCatalog = () => {}, onError = () => {}, clearError = () => {}} = {}) {
+export function createSelectionController({fetchImpl, transport, timers = globalThis, apply = () => {}, sync = () => {}, refreshCatalog = () => {}, onError = () => {}, clearError = () => {}} = {}) {
   let selectionGeneration = 0;
   let selectionAttemptGeneration = 0;
   let query = "selection=all";
   let bundle = null;
   let previous = null;
-  let candidateController = null;
+  let candidateRequest = null;
+  let confirmationRequest = null;
   let candidateAwaitingFirstSnapshot = false;
   const acceptBundle = (generation, acceptedBundle, confirmsCandidate) => {
     if (generation !== selectionGeneration) return false;
@@ -219,18 +261,23 @@ export function createSelectionController({fetchImpl, transport, apply = () => {
       previous = null; candidateAwaitingFirstSnapshot = false;
       sync(query); refreshCatalog(bundle.catalog || [], query); apply(bundle); clearError(); transport.open(query, selectionGeneration);
     },
+    start(initialQuery) {
+      query = normaliseQuery(initialQuery); bundle = null; previous = null; candidateAwaitingFirstSnapshot = false; selectionGeneration += 1;
+      transport.close(); sync(query); refreshCatalog([], query); apply({projects:[]}); clearError(); transport.open(query, selectionGeneration);
+    },
     async select(nextQuery) {
       const candidate = normaliseQuery(nextQuery);
       const attempt = ++selectionAttemptGeneration;
-      if (candidateController?.abort) candidateController.abort();
-      candidateController = typeof AbortController === "function" ? new AbortController() : null;
+      candidateRequest?.abort(); confirmationRequest?.abort();
+      const request = snapshotRequest(fetchImpl, candidate, timers);
+      candidateRequest = request;
       let nextBundle;
       try {
-        const response = await fetchImpl(`/api/snapshot?${candidate}`, candidateController ? {signal: candidateController.signal} : {});
+        const response = await request.promise;
         if (!response?.ok) throw new Error("selection unavailable");
         nextBundle = await response.json();
-      } catch {
-        if (attempt === selectionAttemptGeneration) { sync(query); onError("Selection unavailable"); }
+      } catch (error) {
+        if (attempt === selectionAttemptGeneration && !isAbortError(error, request.controller)) { sync(query); onError("Selection unavailable"); }
         return false;
       }
       if (attempt !== selectionAttemptGeneration) return false;
@@ -242,8 +289,12 @@ export function createSelectionController({fetchImpl, transport, apply = () => {
     acceptPollSnapshot(generation, acceptedBundle = null) { return acceptBundle(generation, acceptedBundle, false); },
     async initialStreamFailed(generation = selectionGeneration) {
       const failedQuery = query;
+      if (generation !== selectionGeneration) return;
+      confirmationRequest?.abort();
+      const request = snapshotRequest(fetchImpl, failedQuery, timers);
+      confirmationRequest = request;
       let response;
-      try { response = await fetchImpl(`/api/snapshot?${failedQuery}`); } catch { return; }
+      try { response = await request.promise; } catch { return; }
       if (generation !== selectionGeneration || !candidateAwaitingFirstSnapshot || response?.status !== 404 || !previous) return;
       const restore = previous; previous = null; selectionGeneration += 1; query = restore.query; bundle = restore.bundle;
       candidateAwaitingFirstSnapshot = false;
@@ -291,7 +342,7 @@ function drawGraph(snapshot, onNode) {
     const title=svgElement("title"); title.textContent=safeText(node.label || node.id); group.append(title);
     group.append(svgElement("rect", {class:"node-frame", width:180, height:62})); group.append(svgElement("rect", {class:"node-accent", width:4, height:62}));
     const subject=svgElement("text", {class:"node-label", x:12, y:22}); subject.textContent=clipped(node.label || node.id, 25); group.append(subject);
-    const line=svgElement("text", {class:"node-meta", x:12, y:42}); if (!TERMINAL.has(state)) { line.dataset.elapsed="node"; line.dataset.startedAt=String(node.started_at || ""); } line.textContent=clipped(`${state} · ${formatDuration(node.started_at, TERMINAL.has(state) ? node.finished_at : new Date())}`, 29); group.append(line);
+    const line=svgElement("text", {class:"node-meta", x:12, y:42}); if (!TERMINAL.has(state)) { line.dataset.elapsed="node"; line.dataset.nodeState=state; line.dataset.startedAt=String(node.started_at || ""); line.dataset.createdAt=String(node.created_at || ""); line.dataset.kind=String(node.kind || ""); line.dataset.degraded=String(Boolean(node.degraded)); } line.textContent=clipped(`${state} · ${nodeDuration(node, new Date())}`, 29); group.append(line);
     const model=svgElement("text", {class:"node-kind", x:12, y:55}); model.textContent=clipped([node.model,node.effort].filter(Boolean).join(" · ") || node.kind || "node", 28); group.append(model);
     group.addEventListener("click", () => onNode(node)); group.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onNode(node); } }); svg.append(group);
   }
@@ -350,12 +401,19 @@ export function updateElapsed(root = document, now = new Date()) {
     node.textContent=`${prefix} · ${formatDuration(node.dataset.startedAt, now)}`;
   }
   for (const node of root.querySelectorAll?.('[data-elapsed="node"]') || []) {
-    const state=safeText(node.textContent.split(" · ")[0]);
-    node.textContent=clipped(`${state} · ${formatDuration(node.dataset.startedAt, now)}`,29);
+    const state=safeText(node.dataset.nodeState || node.textContent.split(" · ")[0]);
+    const duration=nodeDuration({state,started_at:node.dataset.startedAt,created_at:node.dataset.createdAt,kind:node.dataset.kind,degraded:node.dataset.degraded === "true"},now);
+    node.textContent=clipped(`${state} · ${duration}`,29);
   }
 }
 
-function queryFromLocation() { const params=new URLSearchParams(window.location.search); return params.get("selection") === "all" ? "selection=all" : `session=${encodeURIComponent(params.get("session") || "")}`; }
+export function queryFromLocation(location = window.location) { const params=new URLSearchParams(location.search); const session=params.get("session"); return params.get("selection") === "all" || !session ? "selection=all" : `session=${encodeURIComponent(session)}`; }
+
+export function bootstrapDashboard({controller, query, fetchImpl, timers = globalThis, onInitialFailure = () => {}} = {}) {
+  const request = snapshotRequest(fetchImpl, normaliseQuery(query), timers);
+  request.promise.then((response) => response?.ok ? response.json() : Promise.reject()).then((bundle) => controller.seed(query, bundle)).catch(() => { onInitialFailure(); controller.start(query); });
+  return request;
+}
 
 function boot() {
   let lastBundle=null; let focusedSessionId=null; let originSessionId=null; let selectedNodeId=null; let focusEntryPending=false; let scrollY=0; let controller; const openProjects=new Set();
@@ -365,7 +423,7 @@ function boot() {
   const transport=createTransport({EventSourceImpl:globalThis.EventSource, fetchImpl:globalThis.fetch?.bind(globalThis), onBundle:(bundle,meta) => meta.source === "sse" ? controller?.acceptStreamSnapshot(meta.generation,bundle) : controller?.acceptPollSnapshot(meta.generation,bundle), onConnection:setConnection, onElapsed:() => updateElapsed(document,new Date()), onInitialFailure:(generation) => controller?.initialStreamFailed(generation)});
   controller=createSelectionController({fetchImpl:globalThis.fetch?.bind(globalThis), transport, apply:(bundle) => { lastBundle=bundle; render(); }, sync:(query) => { const url=`${window.location.pathname}?${query}`; window.history.replaceState({}, "", url); byId("session-selector").value=query; }, refreshCatalog:(catalog,query) => populateSelector(catalog,query), onError:(message) => { byId("selection-error").textContent=message; }, clearError:() => { byId("selection-error").textContent=""; }});
   byId("session-selector").addEventListener("change", (event) => controller.select(event.target.value));
-  const initial=queryFromLocation(); fetch(`/api/snapshot?${initial}`).then((response) => response.ok ? response.json() : Promise.reject()).then((bundle) => controller.seed(initial,bundle)).catch(() => { setConnection("reconnecting"); render(); });
+  const initial=queryFromLocation(); bootstrapDashboard({controller,query:initial,fetchImpl:globalThis.fetch?.bind(globalThis),onInitialFailure:() => setConnection("reconnecting")});
 }
 
 export function populateSelector(catalog, selected) {

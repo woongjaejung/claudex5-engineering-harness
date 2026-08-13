@@ -97,7 +97,7 @@ def make_handler(store: Any, selection: SessionSelection, stream_interval: float
             return host_header.lower() in {value.lower() for value in allowed}
 
         def _bundle(self, requested: SessionSelection) -> dict[str, object]:
-            return build_bundle(store, requested, completed_limit=1)
+            return build_bundle(store, requested, completed_limit=None)
 
         def _bundle_bytes(self, bundle: dict[str, object]) -> bytes:
             return json.dumps(bundle, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
