@@ -7,14 +7,23 @@ parent_id="$group_id"
 previous_node=""
 gate_index=0
 harness_available=0
-session_args=()
-if [[ -n "${CLAUDEX5_SESSION_ID:-}" ]]; then
-  session_args=(--session-id "$CLAUDEX5_SESSION_ID")
-fi
+session_id="${CLAUDEX5_SESSION_ID:-}"
+
+record_event() {
+  if [[ -n "$session_id" ]]; then
+    claudex5 event --session-id "$session_id" "$@"
+  else
+    claudex5 event "$@"
+  fi
+}
+
 if command -v claudex5 >/dev/null 2>&1; then
-  harness_available=1
-  claudex5 event "${session_args[@]}" --type node.started --node-id "$parent_id" \
-    --kind quality_gate --label "Deterministic quality gates"
+  if record_event --type node.started --node-id "$parent_id" \
+    --kind quality_gate --label "Deterministic quality gates"; then
+    harness_available=1
+  else
+    printf '%s\n' "WARNING: Claudex5 graph telemetry could not start; quality commands will run directly." >&2
+  fi
 else
   printf '%s\n' "WARNING: claudex5 is unavailable; quality commands will run without graph events." >&2
 fi
@@ -28,7 +37,7 @@ finish_parent() {
     elif [[ "$status" -ne 0 ]]; then
       state="failed"
     fi
-    claudex5 event "${session_args[@]}" --type node.finished --node-id "$parent_id" \
+    record_event --type node.finished --node-id "$parent_id" \
       --kind quality_gate --label "Deterministic quality gates" --state "$state" || true
   fi
   return "$status"
@@ -43,7 +52,11 @@ run_gate() {
   gate_index=$((gate_index + 1))
   local node_id="gate:${group_id#quality:}:$gate_index"
   if [[ "$harness_available" -eq 1 ]]; then
-    local args=(gate-run "${session_args[@]}" --group-id "$group_id" --node-id "$node_id" --name "$name")
+    local args=(gate-run)
+    if [[ -n "$session_id" ]]; then
+      args+=(--session-id "$session_id")
+    fi
+    args+=(--group-id "$group_id" --node-id "$node_id" --name "$name")
     if [[ -n "$previous_node" ]]; then
       args+=(--dependency "$previous_node")
     fi

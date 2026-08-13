@@ -45,8 +45,8 @@ def _ordered_nodes(snapshot: Mapping[str, object]) -> list[dict]:
     return sorted(values, key=lambda node: (int(node.get("sequence", 0)), str(node.get("id", ""))))
 
 
-def _incoming(snapshot: Mapping[str, object]) -> dict[str, list[tuple[str, str]]]:
-    result: dict[str, list[tuple[str, str]]] = {}
+def _dependencies(snapshot: Mapping[str, object]) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {}
     edges = snapshot.get("edges", {})
     if not isinstance(edges, Mapping):
         return result
@@ -55,8 +55,8 @@ def _incoming(snapshot: Mapping[str, object]) -> dict[str, list[tuple[str, str]]
         key=lambda edge: (str(edge.get("target", "")), str(edge.get("kind", "")), str(edge.get("source", ""))),
     )
     for edge in ordered:
-        target = str(edge.get("target", ""))
-        result.setdefault(target, []).append((str(edge.get("source", "")), str(edge.get("kind", ""))))
+        if edge.get("kind") == "depends_on":
+            result.setdefault(str(edge.get("source", "")), []).append(str(edge.get("target", "")))
     return result
 
 
@@ -82,7 +82,7 @@ def render_snapshot(
 
     columns = max(32, int(columns))
     nodes = _ordered_nodes(snapshot)
-    incoming = _incoming(snapshot)
+    dependencies = _dependencies(snapshot)
     by_id = {str(node.get("id", "")): node for node in nodes}
     complete = sum(1 for node in nodes if node.get("state") in {"passed", "skipped"})
     project = Path(str(snapshot.get("cwd") or "unknown")).name or "/"
@@ -105,7 +105,7 @@ def render_snapshot(
             symbol = status_map.get(str(node.get("state", "waiting")), "?")
             dependency_names = [
                 _display_name(by_id[source]) if source in by_id else source
-                for source, _kind in incoming.get(node_id, [])
+                for source in dependencies.get(node_id, [])
             ]
             suffix = f"; depends on {', '.join(dependency_names)}" if dependency_names else "; depends on none"
             prefix = f"{symbol} {_display_name(node)}"
@@ -113,7 +113,12 @@ def render_snapshot(
         return "\n".join(lines) + "\n"
 
     connector = "└─" if unicode else "+-"
-    root_ids = {str(node.get("id", "")) for node in nodes if not incoming.get(str(node.get("id", "")))}
+    child_targets = {
+        str(edge.get("target", ""))
+        for edge in snapshot.get("edges", {}).values()
+        if isinstance(edge, dict) and edge.get("kind") != "depends_on"
+    } if isinstance(snapshot.get("edges"), Mapping) else set()
+    root_ids = {str(node.get("id", "")) for node in nodes if str(node.get("id", "")) not in child_targets}
     for node in nodes:
         node_id = str(node.get("id", ""))
         symbol = status_map.get(str(node.get("state", "waiting")), "?")

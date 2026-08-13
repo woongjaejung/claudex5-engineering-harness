@@ -172,6 +172,29 @@ def _finish_state(returncode: int, interrupted: bool) -> str:
     return "passed" if returncode == 0 else "failed"
 
 
+def _record_finished_safely(
+    store: StateStore,
+    session_id: str,
+    node_id: str,
+    payload: dict[str, object],
+    returncode: int,
+    interrupted: bool,
+    *,
+    source: str,
+) -> None:
+    """Keep optional telemetry from replacing the wrapped command's result."""
+    try:
+        store.append(
+            session_id,
+            "node.finished",
+            node_id,
+            {**payload, "state": _finish_state(returncode, interrupted)},
+            source=source,
+        )
+    except Exception:
+        print("WARNING: Claudex5 could not record the final graph event.", file=sys.stderr)
+
+
 def _codex_run(arguments: argparse.Namespace, store: StateStore) -> int:
     session_id = _session_id(store, arguments.session_id)
     model, effort, kind = CODEX_ROLES[arguments.role]
@@ -213,11 +236,8 @@ def _codex_run(arguments: argparse.Namespace, store: StateStore) -> int:
         returncode, interrupted = _run_child(command, prompt=prompt)
         return returncode
     finally:
-        store.append(
-            session_id,
-            "node.finished",
-            node_id,
-            {**payload, "state": _finish_state(returncode, interrupted)},
+        _record_finished_safely(
+            store, session_id, node_id, payload, returncode, interrupted,
             source="codex-wrapper",
         )
 
@@ -245,11 +265,8 @@ def _gate_run(arguments: argparse.Namespace, store: StateStore) -> int:
         returncode, interrupted = _run_child(child)
         return returncode
     finally:
-        store.append(
-            session_id,
-            "node.finished",
-            node_id,
-            {**payload, "state": _finish_state(returncode, interrupted)},
+        _record_finished_safely(
+            store, session_id, node_id, payload, returncode, interrupted,
             source="gate-wrapper",
         )
 

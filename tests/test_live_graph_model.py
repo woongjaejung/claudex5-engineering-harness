@@ -121,6 +121,34 @@ class SnapshotReductionTests(unittest.TestCase):
             ],
         )
 
+    def test_started_wrapper_node_dependencies_create_stable_edges(self) -> None:
+        started = self.event(
+            "event-1",
+            1,
+            "node.started",
+            "gate:test",
+            kind="quality_gate",
+            label="Tests",
+            dependencies=["gate:lint"],
+        )
+
+        reduce_event(self.snapshot, started)
+        reduce_event(self.snapshot, {**started, "event_id": "event-2", "sequence": 2})
+
+        self.assertEqual(
+            self.snapshot["edges"]["gate:test|depends_on|gate:lint"],
+            {
+                "id": "gate:test|depends_on|gate:lint",
+                "source": "gate:test",
+                "target": "gate:lint",
+                "kind": "depends_on",
+            },
+        )
+        self.assertEqual(
+            sum(edge["kind"] == "depends_on" for edge in self.snapshot["edges"].values()),
+            1,
+        )
+
     def test_invalid_node_identifier_is_rejected(self) -> None:
         for node_id in ("", "../escape", "/absolute", "task\\escape", "task%2fescape", "bad\nnode", "x" * 129):
             with self.subTest(node_id=node_id):

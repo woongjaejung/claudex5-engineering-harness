@@ -163,6 +163,19 @@ def _attach_parent(snapshot: dict[str, Any], node_id: str, payload: dict[str, An
         _add_edge(snapshot, parent_id, node_id, payload.get("parent_edge_kind", "contains"))
 
 
+def _add_dependencies(snapshot: dict[str, Any], node_id: str, payload: dict[str, Any]) -> None:
+    dependencies = payload.get("dependencies", [])
+    if not isinstance(dependencies, list):
+        raise ValueError("invalid dependencies")
+    for dependency in dependencies:
+        _add_edge(
+            snapshot,
+            node_id,
+            validate_identifier(dependency, name="dependency"),
+            "depends_on",
+        )
+
+
 def reduce_event(snapshot: dict[str, object], event: dict[str, object]) -> dict[str, object]:
     """Apply one validated lifecycle event to a snapshot in place."""
     if event.get("schema_version") != SCHEMA_VERSION:
@@ -190,11 +203,7 @@ def reduce_event(snapshot: dict[str, object], event: dict[str, object]) -> dict[
             effective.setdefault("state", "waiting")
         nodes.setdefault(node_id, _node_fields(node_id, effective, sequence, timestamp))
         _attach_parent(snapshot, node_id, effective)  # type: ignore[arg-type]
-        dependencies = effective.get("dependencies", [])
-        if not isinstance(dependencies, list):
-            raise ValueError("invalid dependencies")
-        for dependency in dependencies:
-            _add_edge(snapshot, node_id, validate_identifier(dependency, name="dependency"), "depends_on")  # type: ignore[arg-type]
+        _add_dependencies(snapshot, node_id, effective)  # type: ignore[arg-type]
     elif event_type == "node.started":
         existing = nodes.get(node_id)
         if existing is None:
@@ -202,6 +211,7 @@ def reduce_event(snapshot: dict[str, object], event: dict[str, object]) -> dict[
             effective["state"] = "running"
             nodes[node_id] = _node_fields(node_id, effective, sequence, timestamp)
             _attach_parent(snapshot, node_id, effective)  # type: ignore[arg-type]
+            _add_dependencies(snapshot, node_id, effective)  # type: ignore[arg-type]
         elif existing["state"] not in TERMINAL_STATES:
             existing["state"] = "running"
             existing.setdefault("started_at", timestamp)
@@ -213,6 +223,7 @@ def reduce_event(snapshot: dict[str, object], event: dict[str, object]) -> dict[
             if isinstance(role, str) and role in ROLE_METADATA:
                 for key, value in ROLE_METADATA[role].items():
                     existing.setdefault(key, value)
+            _add_dependencies(snapshot, node_id, payload)  # type: ignore[arg-type]
     elif event_type in {"node.finished", "task.updated"}:
         state = payload.get("state")
         if state not in NODE_STATES:

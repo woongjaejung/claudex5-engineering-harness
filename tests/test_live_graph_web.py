@@ -7,7 +7,7 @@ import unittest
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
-from scripts.live_graph.web import create_server
+from scripts.live_graph.web import APP_JS, create_server
 
 
 SAMPLE_SNAPSHOT = {
@@ -76,6 +76,11 @@ def running_server(store: MemoryStore, session_id: str | None = None):
 
 
 class WebDashboardTests(unittest.TestCase):
+    def test_next_runnable_requires_successful_prerequisites(self) -> None:
+        self.assertIn('const SATISFIED = new Set(["passed", "skipped"]);', APP_JS)
+        self.assertIn("SATISFIED.has(stateById.get(source))", APP_JS)
+        self.assertNotIn("TERMINAL.has(stateById.get(source))", APP_JS)
+
     def test_fixed_routes_serve_local_assets_with_security_headers(self) -> None:
         with running_server(MemoryStore()) as base_url:
             for path, expected_type in (

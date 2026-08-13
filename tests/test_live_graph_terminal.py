@@ -95,6 +95,12 @@ def sample_snapshot() -> dict:
                 "target": "gate:test",
                 "kind": "gates",
             },
+            "skip-plan": {
+                "id": "skip-plan",
+                "source": "task:skip",
+                "target": "task:plan",
+                "kind": "depends_on",
+            },
         },
     }
 
@@ -124,6 +130,7 @@ class TerminalRendererTests(unittest.TestCase):
         rendered = render_snapshot(snapshot, columns=60, color=False, unicode=True)
 
         self.assertIn("depends on", rendered)
+        self.assertIn("Optional benchmark; depends on Plan feature", rendered)
         self.assertIn("…", rendered)
         self.assertTrue(all(len(line) <= 60 for line in rendered.splitlines()))
 

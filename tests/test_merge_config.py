@@ -192,6 +192,45 @@ class ClaudeSettingsTests(unittest.TestCase):
                 if event != "Stop":
                     self.assertNotIn(event, result.get("hooks", {}))
 
+    def test_uninstall_rolls_back_every_owned_file_after_an_intermediate_write_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / ".claude").mkdir()
+            (home / ".codex").mkdir()
+            targets = (
+                home / ".claude" / "CLAUDE.md",
+                home / ".codex" / "AGENTS.md",
+                home / ".claude" / "settings.json",
+                home / ".codex" / "config.toml",
+            )
+            targets[0].write_text(
+                f"before\n{START_MARKER}\nmanaged\n{END_MARKER}\n", encoding="utf-8"
+            )
+            targets[1].write_text(
+                f"before codex\n{START_MARKER}\nmanaged\n{END_MARKER}\n", encoding="utf-8"
+            )
+            targets[2].write_text("{}\n", encoding="utf-8")
+            targets[3].write_text("personality = \"keep\"\n", encoding="utf-8")
+            originals = {path: path.read_bytes() for path in targets}
+            real_atomic_write = merge_config_module.atomic_write
+            calls = 0
+
+            def fail_second_write(path, text, mode=None):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("injected intermediate unmerge failure")
+                return real_atomic_write(path, text, mode)
+
+            with unittest.mock.patch.object(
+                merge_config_module, "atomic_write", side_effect=fail_second_write
+            ):
+                with self.assertRaisesRegex(OSError, "intermediate unmerge"):
+                    remove_harness_config(home)
+
+            self.assertGreaterEqual(calls, 3)
+            self.assertEqual({path: path.read_bytes() for path in targets}, originals)
+
 
 class CodexConfigTests(unittest.TestCase):
     def test_merge_preserves_existing_sections_and_warns_without_hardening(self):
@@ -606,6 +645,34 @@ class TemplateTests(unittest.TestCase):
             self.assertIn("--name test", observed)
             self.assertIn("--type node.finished", observed)
             self.assertIn("--state passed", observed)
+
+    def test_quality_gate_falls_back_when_graph_telemetry_cannot_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "calls.log"
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake = fake_bin / "claudex5"
+            fake.write_text("#!/usr/bin/env bash\nexit 70\n", encoding="utf-8")
+            fake.chmod(0o755)
+            (root / "package.json").write_text(
+                json.dumps({"scripts": {"lint": f"printf 'lint\\n' >> {log}"}}),
+                encoding="utf-8",
+            )
+            gate = self.repository / "project-template" / "scripts" / "quality-gate.sh"
+
+            result = subprocess.run(
+                ["/bin/bash", str(gate)],
+                cwd=root,
+                env={**os.environ, "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(log.read_text(encoding="utf-8"), "lint\n")
+            self.assertIn("graph telemetry could not start", result.stderr)
 
 
 class PluginRegistryTests(unittest.TestCase):

@@ -14,7 +14,7 @@ import time
 from typing import Any
 from uuid import uuid4
 
-from .model import SCHEMA_VERSION, new_snapshot, reduce_event, validate_identifier
+from .model import SCHEMA_VERSION, new_snapshot, reduce_event, sanitize_label, validate_identifier
 
 
 def _utc_now() -> str:
@@ -39,6 +39,9 @@ class StateStore:
             state_home = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
             root = state_home / "claudex5-engineering-harness" / "runs"
         self.root = Path(root).expanduser().absolute()
+        self._managed_path_boundary = (
+            self.root.parents[1] if len(self.root.parents) > 1 else self.root.parent
+        )
         self.lock_timeout = lock_timeout
 
     @staticmethod
@@ -50,7 +53,21 @@ class StateStore:
         if stat.S_ISLNK(mode):
             raise ValueError("managed state path must not contain a symbolic link")
 
+    def _reject_symlink_components(self, path: Path) -> None:
+        """Reject every component inside the caller-managed state boundary."""
+        absolute = path.absolute()
+        try:
+            relative = absolute.relative_to(self._managed_path_boundary)
+        except ValueError as error:
+            raise ValueError("managed state path escaped its boundary") from error
+        current = self._managed_path_boundary
+        self._reject_symlink(current)
+        for part in relative.parts:
+            current /= part
+            self._reject_symlink(current)
+
     def _ensure_root(self) -> None:
+        self._reject_symlink_components(self.root)
         if not self.root.exists():
             nearest = self.root.parent
             while not nearest.exists() and nearest != nearest.parent:
@@ -58,7 +75,7 @@ class StateStore:
             self._reject_symlink(nearest)
         self._reject_symlink(self.root)
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self._reject_symlink(self.root)
+        self._reject_symlink_components(self.root)
         os.chmod(self.root, 0o700)
 
     def _run_dir(self, session_id: object, *, create: bool) -> Path:
@@ -196,6 +213,9 @@ class StateStore:
         if not isinstance(payload, dict):
             raise ValueError("event payload must be an object")
         safe_payload = copy.deepcopy(payload)
+        for key in ("label", "title", "role", "model", "effort"):
+            if key in safe_payload:
+                safe_payload[key] = sanitize_label(safe_payload[key])
         if event_type == "session.started":
             safe_payload["cwd"] = _canonical_cwd(safe_payload.get("cwd"))
         run_dir = self._run_dir(session_id, create=True)
@@ -236,10 +256,31 @@ class StateStore:
         if not run_dir.exists():
             return None
         self._reject_symlink(run_dir)
-        snapshot = self._load_unlocked(run_dir, session_id)
-        if snapshot is not None and not (run_dir / "snapshot.json").exists():
-            self._write_snapshot(run_dir, snapshot)
-        return snapshot
+        snapshot_path = run_dir / "snapshot.json"
+        self._reject_symlink(snapshot_path)
+        cached = self._read_json(snapshot_path)
+        if (
+            cached is not None
+            and cached.get("schema_version") == SCHEMA_VERSION
+            and cached.get("session_id") == session_id
+        ):
+            return cached
+        lock_stream = self._lock(run_dir)
+        try:
+            cached = self._read_json(snapshot_path)
+            if (
+                cached is not None
+                and cached.get("schema_version") == SCHEMA_VERSION
+                and cached.get("session_id") == session_id
+            ):
+                return cached
+            snapshot = self._recover(run_dir, session_id)
+            if snapshot is not None:
+                self._write_snapshot(run_dir, snapshot)
+            return snapshot
+        finally:
+            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
+            lock_stream.close()
 
     def latest(self, cwd: Path | str | None = None) -> dict[str, object] | None:
         self._ensure_root()
@@ -283,8 +324,36 @@ class StateStore:
         removed: list[str] = []
         for candidate in sorted(self.root.iterdir(), key=lambda path: path.name):
             self._reject_symlink(candidate)
-            if candidate.is_dir() and candidate.stat().st_mtime < cutoff:
+            if not candidate.is_dir():
+                continue
+            validate_identifier(candidate.name, name="session identifier")
+            event_log = candidate / "events.jsonl"
+            snapshot_path = candidate / "snapshot.json"
+            self._reject_symlink(event_log)
+            self._reject_symlink(snapshot_path)
+            timestamps = [
+                path.stat().st_mtime
+                for path in (event_log, snapshot_path)
+                if path.exists()
+            ]
+            if max(timestamps, default=candidate.stat().st_mtime) >= cutoff:
+                continue
+            lock_stream = self._lock(candidate)
+            try:
+                timestamps = [
+                    path.stat().st_mtime
+                    for path in (event_log, snapshot_path)
+                    if path.exists()
+                ]
+                if max(timestamps, default=candidate.stat().st_mtime) >= cutoff:
+                    continue
+                snapshot = self._load_unlocked(candidate, candidate.name)
+                if snapshot is not None and snapshot.get("status") == "running":
+                    continue
                 removed.append(self._remove_run(candidate))
+            finally:
+                fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
+                lock_stream.close()
         return removed
 
     def clear_all(self) -> list[str]:

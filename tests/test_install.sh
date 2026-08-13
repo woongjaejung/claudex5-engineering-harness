@@ -92,14 +92,19 @@ run_install
 [[ "$(grep -c '\[agents.harness_sol_plan_review\]' "$test_home/.codex/config.toml")" -eq 1 ]]
 [[ "$(find "$test_home/.local/state/claudex5-engineering-harness/backups" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" -ge 1 ]]
 
-if CLAUDEX5_PYTHON="$python_bin" CLAUDEX5_UNINSTALL_FAIL=1 \
+cp "$test_home/.claude/settings.json" "$test_root/settings-before-invalid.json"
+printf '%s\n' '{invalid' > "$test_home/.claude/settings.json"
+if CLAUDEX5_PYTHON="$python_bin" \
   "$repo_root/uninstall.sh" --home "$test_home" >/dev/null 2>&1; then
-  printf '%s\n' "injected unmerge failure must fail uninstall" >&2
+  printf '%s\n' "intermediate unmerge parse failure must fail uninstall" >&2
   exit 1
 fi
 [[ -L "$test_home/.local/bin/claudex5" ]]
 [[ -L "$test_home/.claude/hooks/claudex5-live-graph.py" ]]
 grep -q 'BEGIN CLAUDEX5' "$test_home/.claude/CLAUDE.md"
+grep -q 'BEGIN CLAUDEX5' "$test_home/.codex/AGENTS.md"
+grep -q '^{invalid$' "$test_home/.claude/settings.json"
+cp "$test_root/settings-before-invalid.json" "$test_home/.claude/settings.json"
 
 CLAUDEX5_PYTHON="$python_bin" "$repo_root/uninstall.sh" --home "$test_home"
 [[ ! -e "$test_home/.claude/agents/harness-orchestrator.md" ]]

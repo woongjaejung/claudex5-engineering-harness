@@ -31,6 +31,7 @@ INDEX_HTML = """<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Claudex5 Live Graph</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/style.css">
   <script src="/app.js" defer></script>
 </head>
@@ -312,6 +313,7 @@ APP_JS = r"""
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const TERMINAL = new Set(["passed", "failed", "blocked", "skipped", "interrupted"]);
+const SATISFIED = new Set(["passed", "skipped"]);
 const STATES = new Set(["waiting", "running", ...TERMINAL]);
 let lastSnapshot = null;
 
@@ -341,9 +343,11 @@ function orderedGraph(snapshot) {
     for (const edge of edges) {
       const source = String(edge.source);
       const target = String(edge.target);
-      const candidate = Math.min(nodes.length - 1, (rank.get(source) || 0) + 1);
-      if (candidate > (rank.get(target) || 0)) {
-        rank.set(target, candidate);
+      const predecessor = edge.kind === "depends_on" ? target : source;
+      const successor = edge.kind === "depends_on" ? source : target;
+      const candidate = Math.min(nodes.length - 1, (rank.get(predecessor) || 0) + 1);
+      if (candidate > (rank.get(successor) || 0)) {
+        rank.set(successor, candidate);
         changed = true;
       }
     }
@@ -443,12 +447,14 @@ function updateSummary(snapshot) {
   byId("degraded").textContent = snapshot.degraded ? "EVENT LOG DEGRADED" : "EVENT LOG HEALTHY";
   byId("degraded").classList.toggle("warning", Boolean(snapshot.degraded));
 
-  const incoming = new Map(nodes.map((node) => [String(node.id), []]));
+  const dependencies = new Map(nodes.map((node) => [String(node.id), []]));
   for (const edge of Object.values(snapshot.edges || {})) {
-    if (edge && incoming.has(String(edge.target))) incoming.get(String(edge.target)).push(String(edge.source));
+    if (edge && edge.kind === "depends_on" && dependencies.has(String(edge.source))) {
+      dependencies.get(String(edge.source)).push(String(edge.target));
+    }
   }
   const stateById = new Map(nodes.map((node) => [String(node.id), String(node.state)]));
-  const runnable = nodes.filter((node) => node && node.state === "waiting" && (incoming.get(String(node.id)) || []).every((source) => TERMINAL.has(stateById.get(source))));
+  const runnable = nodes.filter((node) => node && node.state === "waiting" && (dependencies.get(String(node.id)) || []).every((source) => SATISFIED.has(stateById.get(source))));
   const list = byId("next-runnable");
   list.replaceChildren();
   for (const node of runnable.slice(0, 5)) {

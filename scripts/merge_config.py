@@ -306,51 +306,78 @@ def harder_bool(value: bool) -> bool:
 
 
 def remove_harness_config(home: Path) -> None:
+    global _WRITE_JOURNAL
     claude_md = home / ".claude" / "CLAUDE.md"
     codex_md = home / ".codex" / "AGENTS.md"
-    for path in (claude_md, codex_md):
-        if path.exists():
-            atomic_write(
-                path,
-                remove_managed_block(path.read_text(encoding="utf-8"), START_MARKER, END_MARKER),
-            )
-
     settings_path = home / ".claude" / "settings.json"
-    if settings_path.exists():
-        settings = json.loads(settings_path.read_text(encoding="utf-8"))
-        if not isinstance(settings, dict):
-            raise ValueError("Claude settings root must be a JSON object")
-        changed = False
-        hooks = settings.get("hooks")
-        if isinstance(hooks, dict):
-            for event, owned_group in CLAUDEX5_HOOK_GROUPS.items():
-                groups = hooks.get(event)
-                if not isinstance(groups, list):
-                    continue
-                retained = [group for group in groups if group != owned_group]
-                if retained != groups:
-                    changed = True
-                if retained:
-                    hooks[event] = retained
-                else:
-                    hooks.pop(event, None)
-            if not hooks:
-                settings.pop("hooks", None)
-        if settings.get("subagentStatusLine") == CLAUDEX5_SUBAGENT_STATUS_LINE:
-            del settings["subagentStatusLine"]
-            changed = True
-        if changed:
-            atomic_write(
-                settings_path,
-                json.dumps(settings, indent=2, ensure_ascii=False) + "\n",
-            )
-
     config_path = home / ".codex" / "config.toml"
-    if config_path.exists():
-        original = config_path.read_text(encoding="utf-8")
-        cleaned = _remove_owned_codex_sections(original, harden=False)
-        parse_toml(cleaned)
-        atomic_write(config_path, cleaned)
+    targets = (claude_md, codex_md, settings_path, config_path)
+    originals = {
+        path: (path.read_bytes(), stat.S_IMODE(path.stat().st_mode)) if path.exists() else None
+        for path in targets
+    }
+    write_journal: dict[Path, str] = {}
+    _WRITE_JOURNAL = write_journal
+    try:
+        for path in (claude_md, codex_md):
+            if path.exists():
+                atomic_write(
+                    path,
+                    remove_managed_block(
+                        path.read_text(encoding="utf-8"), START_MARKER, END_MARKER
+                    ),
+                )
+
+        if settings_path.exists():
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+            if not isinstance(settings, dict):
+                raise ValueError("Claude settings root must be a JSON object")
+            changed = False
+            hooks = settings.get("hooks")
+            if isinstance(hooks, dict):
+                for event, owned_group in CLAUDEX5_HOOK_GROUPS.items():
+                    groups = hooks.get(event)
+                    if not isinstance(groups, list):
+                        continue
+                    retained = [group for group in groups if group != owned_group]
+                    if retained != groups:
+                        changed = True
+                    if retained:
+                        hooks[event] = retained
+                    else:
+                        hooks.pop(event, None)
+                if not hooks:
+                    settings.pop("hooks", None)
+            if settings.get("subagentStatusLine") == CLAUDEX5_SUBAGENT_STATUS_LINE:
+                del settings["subagentStatusLine"]
+                changed = True
+            if changed:
+                atomic_write(
+                    settings_path,
+                    json.dumps(settings, indent=2, ensure_ascii=False) + "\n",
+                )
+
+        if config_path.exists():
+            original = config_path.read_text(encoding="utf-8")
+            cleaned = _remove_owned_codex_sections(original, harden=False)
+            parse_toml(cleaned)
+            atomic_write(config_path, cleaned)
+    except Exception:
+        _WRITE_JOURNAL = None
+        for path, original in originals.items():
+            expected_digest = write_journal.get(path)
+            if expected_digest is None:
+                continue
+            if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected_digest:
+                continue
+            if original is None:
+                path.unlink(missing_ok=True)
+            else:
+                data, mode = original
+                atomic_write(path, data.decode("utf-8"), mode=mode)
+        raise
+    finally:
+        _WRITE_JOURNAL = None
 
 
 def install_from_repository(
@@ -421,8 +448,6 @@ def main() -> int:
         ):
             print(f"WARNING: {warning}")
     else:
-        if os.environ.get("CLAUDEX5_UNINSTALL_FAIL") == "1":
-            raise RuntimeError("injected uninstall failure")
         remove_harness_config(home)
     return 0
 

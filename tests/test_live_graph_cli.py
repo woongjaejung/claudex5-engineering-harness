@@ -9,6 +9,9 @@ import subprocess
 import tempfile
 import time
 import unittest
+import unittest.mock
+
+import scripts.live_graph_cli as live_graph_cli
 
 
 REPOSITORY = Path(__file__).parents[1]
@@ -120,6 +123,8 @@ class LiveGraphCliTests(unittest.TestCase):
             "Plan review",
             "--sandbox",
             "read-only",
+            "--dependency",
+            "task:plan",
             "--prompt-file",
             str(prompt_file),
         )
@@ -148,6 +153,14 @@ class LiveGraphCliTests(unittest.TestCase):
         review = next(node for node in snapshot["nodes"].values() if node.get("label") == "Plan review")
         self.assertEqual(review["state"], "failed")
         self.assertEqual(review["model"], "gpt-5.6-sol")
+        self.assertIn(
+            f"{review['id']}|depends_on|task:plan",
+            snapshot["edges"],
+        )
+        self.assertEqual(
+            snapshot["edges"][f"{review['id']}|depends_on|task:plan"]["target"],
+            "task:plan",
+        )
         persisted = b"\n".join(path.read_bytes() for path in self.state_home.rglob("*") if path.is_file())
         self.assertNotIn(b"Review this plan without storing it", persisted)
 
@@ -247,6 +260,33 @@ class LiveGraphCliTests(unittest.TestCase):
             node for node in snapshot["nodes"].values() if node.get("label") == "long test"
         )
         self.assertEqual(child_node["state"], "interrupted")
+
+    def test_final_telemetry_failure_does_not_replace_child_exit_status(self) -> None:
+        class FailingFinalStore:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def append(self, *_args, **_kwargs):
+                self.calls += 1
+                if self.calls == 2:
+                    raise OSError("state disk unavailable")
+
+            def latest(self, *_args, **_kwargs):
+                return None
+
+        arguments = live_graph_cli._parser().parse_args(
+            ["gate-run", "--session-id", "session-1", "--name", "tests", "--", "child"]
+        )
+        store = FailingFinalStore()
+
+        with unittest.mock.patch.object(
+            live_graph_cli, "_run_child", return_value=(9, False)
+        ), unittest.mock.patch("sys.stderr") as stderr:
+            result = live_graph_cli._gate_run(arguments, store)
+
+        self.assertEqual(result, 9)
+        self.assertEqual(store.calls, 2)
+        self.assertTrue(stderr.write.called)
 
 
 if __name__ == "__main__":

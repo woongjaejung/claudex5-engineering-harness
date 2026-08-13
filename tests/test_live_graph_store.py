@@ -94,6 +94,17 @@ class StateStoreTests(unittest.TestCase):
         self.assertTrue(recovered["degraded"])
         self.assertEqual(recovered["sequence"], 2)
 
+    def test_recovery_waits_for_run_lock_before_rebuilding_snapshot(self) -> None:
+        self.start()
+        run_dir = self.root / "session-1"
+        (run_dir / "snapshot.json").unlink()
+        with (run_dir / ".lock").open("r+") as lock_stream:
+            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            blocked_store = StateStore(self.root, lock_timeout=0.02)
+            with self.assertRaises(TimeoutError):
+                blocked_store.load("session-1")
+        self.assertFalse((run_dir / "snapshot.json").exists())
+
     def test_latest_selects_newest_matching_canonical_project(self) -> None:
         other = Path(self.temporary.name) / "other"
         other.mkdir()
@@ -110,6 +121,12 @@ class StateStoreTests(unittest.TestCase):
     def test_cleanup_removes_only_runs_older_than_boundary(self) -> None:
         self.start("old")
         self.start("fresh")
+        self.store.append(
+            "old",
+            "session.ended",
+            "session:old",
+            {"state": "passed"},
+        )
         old_dir = self.root / "old"
         nine_days_ago = time.time() - 9 * 86400
         for path in old_dir.iterdir():
@@ -120,6 +137,38 @@ class StateStoreTests(unittest.TestCase):
         self.assertEqual(removed, ["old"])
         self.assertFalse(old_dir.exists())
         self.assertTrue((self.root / "fresh").exists())
+
+    def test_cleanup_preserves_active_run_even_when_its_files_are_old(self) -> None:
+        self.start("active")
+        active_dir = self.root / "active"
+        nine_days_ago = time.time() - 9 * 86400
+        for path in active_dir.iterdir():
+            os.utime(path, (nine_days_ago, nine_days_ago))
+        os.utime(active_dir, (nine_days_ago, nine_days_ago))
+
+        self.assertEqual(self.store.cleanup(max_age_days=7), [])
+        self.assertTrue(active_dir.exists())
+
+    def test_cleanup_does_not_delete_a_locked_terminal_run(self) -> None:
+        self.start("locked")
+        self.store.append(
+            "locked",
+            "session.ended",
+            "session:locked",
+            {"state": "passed"},
+        )
+        run_dir = self.root / "locked"
+        nine_days_ago = time.time() - 9 * 86400
+        for path in run_dir.iterdir():
+            os.utime(path, (nine_days_ago, nine_days_ago))
+        os.utime(run_dir, (nine_days_ago, nine_days_ago))
+
+        with (run_dir / ".lock").open("r+") as lock_stream:
+            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            blocked_store = StateStore(self.root, lock_timeout=0.02)
+            with self.assertRaises(TimeoutError):
+                blocked_store.cleanup(max_age_days=7)
+        self.assertTrue(run_dir.exists())
 
     def test_rejects_untrusted_session_and_node_identifiers_before_path_construction(self) -> None:
         bad_values = ("", "..", "../escape", "/absolute", "slash/value", "back\\value", "encoded%2Fvalue", "bad\nvalue", "x" * 129)
@@ -133,10 +182,10 @@ class StateStoreTests(unittest.TestCase):
 
     def test_rejects_symlink_in_managed_state_path(self) -> None:
         real = Path(self.temporary.name) / "real"
-        real.mkdir()
+        (real / "inner").mkdir(parents=True)
         linked_parent = Path(self.temporary.name) / "linked"
         linked_parent.symlink_to(real, target_is_directory=True)
-        store = StateStore(linked_parent / "runs")
+        store = StateStore(linked_parent / "inner" / "runs")
 
         with self.assertRaises(ValueError):
             store.append(
