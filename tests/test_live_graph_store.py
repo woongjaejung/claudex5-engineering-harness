@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from scripts.live_graph.store import StateStore
 
@@ -104,6 +105,54 @@ class StateStoreTests(unittest.TestCase):
             with self.assertRaises(TimeoutError):
                 blocked_store.load("session-1")
         self.assertFalse((run_dir / "snapshot.json").exists())
+
+    def test_load_replays_durable_event_when_snapshot_write_failed(self) -> None:
+        self.start()
+        with mock.patch.object(self.store, "_write_snapshot", side_effect=OSError("snapshot failed")):
+            with self.assertRaisesRegex(OSError, "snapshot failed"):
+                self.store.append(
+                    "session-1",
+                    "node.started",
+                    "task:durable",
+                    {"kind": "task", "label": "Durable event"},
+                )
+
+        run_dir = self.root / "session-1"
+        self.assertEqual(len((run_dir / "events.jsonl").read_text().splitlines()), 2)
+        recovered = StateStore(self.root).load("session-1")
+        self.assertEqual(recovered["sequence"], 2)
+        self.assertIn("task:durable", recovered["nodes"])
+
+        third = StateStore(self.root).append(
+            "session-1", "checkpoint", "session:session-1", {"label": "after recovery"}
+        )
+        self.assertEqual(third["sequence"], 3)
+        self.assertEqual(
+            [json.loads(line)["sequence"] for line in (run_dir / "events.jsonl").read_text().splitlines()],
+            [1, 2, 3],
+        )
+
+    def test_semantically_corrupt_snapshot_recovers_or_isolated_from_other_runs(self) -> None:
+        self.start("healthy")
+        self.start("recoverable")
+        recoverable_path = self.root / "recoverable" / "snapshot.json"
+        recoverable_path.write_text(
+            json.dumps({"schema_version": 1, "session_id": "recoverable", "sequence": "oops"}),
+            encoding="utf-8",
+        )
+        recovered = self.store.load("recoverable")
+        self.assertEqual(recovered["sequence"], 1)
+        self.assertEqual(recovered["session_id"], "recoverable")
+
+        corrupt_dir = self.root / "corrupt"
+        corrupt_dir.mkdir(mode=0o700)
+        (corrupt_dir / "snapshot.json").write_text(
+            json.dumps({"schema_version": 1, "session_id": "corrupt", "sequence": "oops"}),
+            encoding="utf-8",
+        )
+        snapshots = self.store.snapshots()
+        self.assertEqual({item["session_id"] for item in snapshots}, {"healthy", "recoverable"})
+        self.assertTrue((corrupt_dir / "snapshot.json").exists())
 
     def test_latest_selects_newest_matching_canonical_project(self) -> None:
         other = Path(self.temporary.name) / "other"

@@ -14,7 +14,16 @@ import time
 from typing import Any
 from uuid import uuid4
 
-from .model import SCHEMA_VERSION, new_snapshot, reduce_event, sanitize_label, validate_identifier
+from .model import (
+    EDGE_KINDS,
+    NODE_KINDS,
+    NODE_STATES,
+    SCHEMA_VERSION,
+    new_snapshot,
+    reduce_event,
+    sanitize_label,
+    validate_identifier,
+)
 
 
 _TEXT_FIELDS = frozenset({"label", "title", "session_title", "description"})
@@ -36,6 +45,88 @@ _PAYLOAD_FIELDS: dict[str, frozenset[str]] = {
     "edge.created": frozenset({"target", "kind"}),
     "checkpoint": frozenset({"label"}),
 }
+_SNAPSHOT_FIELDS = frozenset(
+    {
+        "schema_version", "session_id", "cwd", "title", "created_at", "updated_at",
+        "sequence", "status", "degraded", "root_node_id", "nodes", "edges", "checkpoints",
+    }
+)
+_NODE_FIELDS = frozenset(
+    {
+        "id", "kind", "label", "description", "state", "sequence", "created_at",
+        "started_at", "finished_at", "degraded", "role", "model", "effort", "superseded_by",
+    }
+)
+_EDGE_FIELDS = frozenset({"id", "source", "target", "kind"})
+_CHECKPOINT_FIELDS = frozenset({"sequence", "timestamp", "label"})
+
+
+def _is_int(value: object, *, minimum: int = 0) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+
+
+def _valid_snapshot(snapshot: object, session_id: str) -> bool:
+    """Validate the persisted presentation schema before returning cached data."""
+    if not isinstance(snapshot, dict) or not set(snapshot).issubset(_SNAPSHOT_FIELDS):
+        return False
+    if snapshot.get("schema_version") != SCHEMA_VERSION or snapshot.get("session_id") != session_id:
+        return False
+    if not all(isinstance(snapshot.get(key), str) for key in ("cwd", "created_at", "updated_at")):
+        return False
+    if "title" in snapshot and not isinstance(snapshot["title"], str):
+        return False
+    if not _is_int(snapshot.get("sequence")) or snapshot.get("status") not in NODE_STATES:
+        return False
+    if not isinstance(snapshot.get("degraded"), bool):
+        return False
+    try:
+        root_node_id = validate_identifier(snapshot.get("root_node_id"), name="root node identifier")
+    except ValueError:
+        return False
+    nodes = snapshot.get("nodes")
+    edges = snapshot.get("edges")
+    checkpoints = snapshot.get("checkpoints")
+    if not isinstance(nodes, dict) or root_node_id not in nodes or not isinstance(edges, dict) or not isinstance(checkpoints, list):
+        return False
+    for node_id, node in nodes.items():
+        try:
+            safe_node_id = validate_identifier(node_id, name="node identifier")
+        except ValueError:
+            return False
+        if not isinstance(node, dict) or not set(node).issubset(_NODE_FIELDS):
+            return False
+        if node.get("id") != safe_node_id or node.get("kind") not in NODE_KINDS or node.get("state") not in NODE_STATES:
+            return False
+        if not isinstance(node.get("label"), str) or not _is_int(node.get("sequence")) or not isinstance(node.get("created_at"), str):
+            return False
+        for key in ("description", "started_at", "finished_at", "role", "model", "effort"):
+            if key in node and not isinstance(node[key], str):
+                return False
+        if "degraded" in node and not isinstance(node["degraded"], bool):
+            return False
+        if "superseded_by" in node:
+            try:
+                validate_identifier(node["superseded_by"], name="superseding node identifier")
+            except ValueError:
+                return False
+    for edge_id, edge in edges.items():
+        if not isinstance(edge_id, str) or not isinstance(edge, dict) or set(edge) != _EDGE_FIELDS:
+            return False
+        if edge.get("id") != edge_id or edge.get("kind") not in EDGE_KINDS:
+            return False
+        try:
+            validate_identifier(edge.get("source"), name="edge source")
+            validate_identifier(edge.get("target"), name="edge target")
+        except ValueError:
+            return False
+    for checkpoint in checkpoints:
+        if not isinstance(checkpoint, dict) or set(checkpoint) != _CHECKPOINT_FIELDS:
+            return False
+        if not _is_int(checkpoint.get("sequence"), minimum=1):
+            return False
+        if not isinstance(checkpoint.get("timestamp"), str) or not isinstance(checkpoint.get("label"), str):
+            return False
+    return True
 
 
 def _utc_now() -> str:
@@ -179,6 +270,18 @@ class StateStore:
                 os.fsync(stream.fileno())
             os.replace(temporary, destination)
             os.chmod(destination, 0o600)
+            directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            directory_fd = os.open(run_dir, directory_flags)
+            try:
+                os.fsync(directory_fd)
+            except OSError as error:
+                unsupported = {errno.EBADF, errno.EINVAL}
+                if hasattr(errno, "ENOTSUP"):
+                    unsupported.add(errno.ENOTSUP)
+                if error.errno not in unsupported:
+                    raise
+            finally:
+                os.close(directory_fd)
         finally:
             try:
                 temporary.unlink()
@@ -193,12 +296,45 @@ class StateStore:
             return None
         return value if isinstance(value, dict) else None
 
+    def _event_log_sequence(self, run_dir: Path, session_id: str) -> int | None:
+        """Return the greatest structurally valid durable event sequence."""
+        events_path = run_dir / "events.jsonl"
+        self._reject_symlink(events_path)
+        try:
+            lines = events_path.read_text(encoding="utf-8").splitlines()
+        except (FileNotFoundError, OSError, UnicodeError):
+            return None
+        greatest: int | None = None
+        for line in lines:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            sequence = event.get("sequence")
+            if (
+                event.get("schema_version") == SCHEMA_VERSION
+                and event.get("session_id") == session_id
+                and _is_int(sequence, minimum=1)
+            ):
+                greatest = max(greatest or 0, sequence)
+        return greatest
+
+    def _cached_is_current(
+        self, snapshot: dict[str, object] | None, run_dir: Path, session_id: str
+    ) -> bool:
+        if not _valid_snapshot(snapshot, session_id):
+            return False
+        log_sequence = self._event_log_sequence(run_dir, session_id)
+        return log_sequence is None or int(snapshot["sequence"]) >= log_sequence
+
     def _recover(self, run_dir: Path, session_id: str) -> dict[str, object] | None:
         events_path = run_dir / "events.jsonl"
         self._reject_symlink(events_path)
         try:
             lines = events_path.read_text(encoding="utf-8").splitlines()
-        except FileNotFoundError:
+        except (FileNotFoundError, OSError, UnicodeError):
             return None
         valid_events: list[dict[str, object]] = []
         degraded = False
@@ -238,11 +374,7 @@ class StateStore:
         snapshot_path = run_dir / "snapshot.json"
         self._reject_symlink(snapshot_path)
         snapshot = self._read_json(snapshot_path)
-        if (
-            snapshot is not None
-            and snapshot.get("schema_version") == SCHEMA_VERSION
-            and snapshot.get("session_id") == session_id
-        ):
+        if self._cached_is_current(snapshot, run_dir, session_id):
             return snapshot
         return self._recover(run_dir, session_id)
 
@@ -304,25 +436,18 @@ class StateStore:
         snapshot_path = run_dir / "snapshot.json"
         self._reject_symlink(snapshot_path)
         cached = self._read_json(snapshot_path)
-        if (
-            cached is not None
-            and cached.get("schema_version") == SCHEMA_VERSION
-            and cached.get("session_id") == session_id
-        ):
+        if self._cached_is_current(cached, run_dir, session_id):
             return cached
         lock_stream = self._lock(run_dir)
         try:
             cached = self._read_json(snapshot_path)
-            if (
-                cached is not None
-                and cached.get("schema_version") == SCHEMA_VERSION
-                and cached.get("session_id") == session_id
-            ):
+            if self._cached_is_current(cached, run_dir, session_id):
                 return cached
             snapshot = self._recover(run_dir, session_id)
-            if snapshot is not None:
+            if snapshot is not None and _valid_snapshot(snapshot, session_id):
                 self._write_snapshot(run_dir, snapshot)
-            return snapshot
+                return snapshot
+            return None
         finally:
             fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
             lock_stream.close()
