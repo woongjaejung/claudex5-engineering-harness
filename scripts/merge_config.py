@@ -346,12 +346,18 @@ def harder_bool(value: bool) -> bool:
     return value
 
 
-def _config_state_text(home: Path) -> str:
+def _config_state_text(
+    targets: tuple[Path, ...],
+    originals: dict[Path, tuple[bytes, int] | None],
+    write_journal: dict[Path, str],
+) -> str:
     rows = []
-    for relative in (".claude/settings.json", ".claude/CLAUDE.md", ".codex/config.toml", ".codex/AGENTS.md"):
-        path = home / relative
-        if path.is_file():
-            rows.append(f"{relative}\tpresent\t{hashlib.sha256(path.read_bytes()).hexdigest()}")
+    for path in targets:
+        relative = str(path.relative_to(path.parents[1]))
+        if path in write_journal:
+            rows.append(f"{relative}\tpresent\t{write_journal[path]}")
+        elif originals[path] is not None:
+            rows.append(f"{relative}\tpresent\t{hashlib.sha256(originals[path][0]).hexdigest()}")
         else:
             rows.append(f"{relative}\tabsent\t-")
     return "\n".join(rows) + "\n"
@@ -415,7 +421,7 @@ def remove_harness_config(home: Path, state_file: Path | None = None) -> None:
             parse_toml(cleaned)
             atomic_write(config_path, cleaned)
         if state_file is not None:
-            atomic_write(state_file, _config_state_text(home), mode=0o600)
+            atomic_write(state_file, _config_state_text(targets, originals, write_journal), mode=0o600)
     except Exception:
         _WRITE_JOURNAL = None
         for path, original in originals.items():

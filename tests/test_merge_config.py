@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -294,6 +295,36 @@ class ClaudeSettingsTests(unittest.TestCase):
                 with self.assertRaisesRegex(OSError, "state publication"):
                     remove_harness_config(home, state_file)
             self.assertEqual(claude_md.read_bytes(), original)
+
+    def test_uninstall_state_uses_committed_payload_not_concurrent_edit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / ".claude").mkdir()
+            (home / ".codex").mkdir()
+            claude_md = home / ".claude" / "CLAUDE.md"
+            claude_md.write_text(f"before\n{START_MARKER}\nmanaged\n{END_MARKER}\n")
+            (home / ".claude" / "settings.json").write_text("{}\n")
+            state_file = home / "state.tsv"
+            real_atomic_write = merge_config_module.atomic_write
+
+            def concurrent_edit_after_write(path, text, mode=None):
+                result = real_atomic_write(path, text, mode)
+                if path == claude_md:
+                    claude_md.write_text("concurrent user change\n")
+                return result
+
+            with unittest.mock.patch.object(
+                merge_config_module, "atomic_write", side_effect=concurrent_edit_after_write
+            ):
+                remove_harness_config(home, state_file)
+
+            expected = hashlib.sha256(b"before\n").hexdigest()
+            published = dict(
+                (line.split("\t", 1)[0], line.split("\t", 1)[1])
+                for line in state_file.read_text().splitlines()
+            )
+            self.assertEqual(published[".claude/CLAUDE.md"], f"present\t{expected}")
+            self.assertEqual(claude_md.read_text(), "concurrent user change\n")
 
 
 class CodexConfigTests(unittest.TestCase):
