@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import tempfile
 import tomllib
@@ -85,7 +86,7 @@ class CodexConfigTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            warnings = merge_codex_config(path, root / "agents", harden=False)
+            warnings = merge_codex_config(path, root / "agents", harden=False, enable_spark=False)
             parsed = tomllib.loads(path.read_text(encoding="utf-8"))
 
             self.assertEqual(parsed["model"], "gpt-existing")
@@ -113,6 +114,25 @@ class CodexConfigTests(unittest.TestCase):
             self.assertEqual(once, twice)
             self.assertEqual(twice.count("[features]"), 1)
             self.assertEqual(twice.count("[agents.harness_sol_review]"), 1)
+
+    def test_spark_agent_is_registered_only_when_enabled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "config.toml"
+            path.write_text('personality = "pragmatic"\n', encoding="utf-8")
+
+            merge_codex_config(path, root / "agents", harden=False, enable_spark=True)
+            enabled = tomllib.loads(path.read_text(encoding="utf-8"))
+
+            self.assertEqual(
+                enabled["agents"]["harness_spark_ui_iteration"]["config_file"],
+                str(root / "agents" / "harness-spark-ui-iteration.toml"),
+            )
+
+            merge_codex_config(path, root / "agents", harden=False, enable_spark=False)
+            disabled = tomllib.loads(path.read_text(encoding="utf-8"))
+
+            self.assertNotIn("harness_spark_ui_iteration", disabled["agents"])
 
     def test_hardening_removes_only_exact_root_trust_table(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -295,6 +315,7 @@ class TemplateTests(unittest.TestCase):
             "harness-luna-implementation.toml": ("gpt-5.6-luna", "max"),
             "harness-sol-review.toml": ("gpt-5.6-sol", "high"),
             "harness-sol-adversarial-review.toml": ("gpt-5.6-sol", "high"),
+            "harness-spark-ui-iteration.toml": ("gpt-5.3-codex-spark", None),
         }
         directory = self.repository / "codex" / "agents"
         actual = {
@@ -305,8 +326,15 @@ class TemplateTests(unittest.TestCase):
         self.assertEqual(set(actual), set(expected))
         for filename, (model, effort) in expected.items():
             self.assertEqual(actual[filename]["model"], model)
-            self.assertEqual(actual[filename]["model_reasoning_effort"], effort)
+            if effort is None:
+                self.assertNotIn("model_reasoning_effort", actual[filename])
+            else:
+                self.assertEqual(actual[filename]["model_reasoning_effort"], effort)
             self.assertTrue(actual[filename]["developer_instructions"].strip())
+
+    def test_root_readme_is_english_only(self):
+        readme = (self.repository / "README.md").read_text(encoding="utf-8")
+        self.assertIsNone(re.search(r"[가-힣]", readme))
 
     def test_quality_gate_runs_available_package_scripts(self):
         with tempfile.TemporaryDirectory() as directory:

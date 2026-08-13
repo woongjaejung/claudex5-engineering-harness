@@ -34,10 +34,44 @@ cd claudex5-engineering-harness
 ./install.sh --bootstrap
 claude
 codex login --device-auth
+./install.sh
 ./verify.sh --strict
 ```
 
 Claude와 ChatGPT 로그인은 각 머신에서 한 번씩 직접 해야 합니다. 다른 컴퓨터의 인증 파일은 새 컴퓨터나 서버로 복사되지 않습니다.
+인증 뒤 `./install.sh`를 한 번 더 실행하는 이유는 계정별 Spark 접근 가능 여부를 그때 처음 정확히 확인할 수 있기 때문입니다.
+
+## Pro 계정의 Spark 자동 사용
+
+Spark의 정확한 모델 식별자는 `gpt-5.3-codex-spark`입니다. 현재 연구 프리뷰에서는 ChatGPT Pro 계정에만 제공되지만, 하네스는 인증 파일에서 구독 이름을 읽거나 추측하지 않습니다. 대신 Codex의 공식 `model/list` 기능으로 현재 계정에 이 모델이 실제 표시되는지만 확인합니다.
+
+- Spark가 표시되면 `harness_spark_ui_iteration` 전역 역할을 자동 등록합니다.
+- Spark가 없거나 확인에 실패하면 설치는 정상 완료되고 Sonnet 구현 역할을 사용합니다.
+- 확인 과정에서는 모델에게 프롬프트를 보내지 않으므로 Spark 사용량을 소비하지 않습니다.
+- 모델 목록, 구독 정보, 토큰은 파일에 저장하거나 Git에 포함하지 않습니다.
+
+Spark가 자동 배정되는 범위는 기존 화면의 작고 명확한 수정 한 가지입니다. 예를 들면 간격, 문구, 버튼 상태 또는 좁은 시각적 오류를 고치고 브라우저로 확인하는 작업입니다. 백엔드 로직, 구조 설계, 보안 기능, 데이터 마이그레이션, 큰 리팩터링과 코드 리뷰에는 사용하지 않습니다.
+
+평소처럼 다음과 같이 요청하면 됩니다.
+
+```text
+기존 설정 창에서 저장 버튼 위 간격만 다른 입력 영역과 맞춰줘.
+동작과 데이터 흐름은 바꾸지 말고 브라우저에서 확인해줘.
+```
+
+Spark가 등록된 머신에서 명시적으로 호출하려면 Claude Code 안에서 다음처럼 요청할 수 있습니다.
+
+```text
+/codex:rescue --fresh --model spark 기존 프로필 카드의 간격 한 곳만 수정하고 동작은 유지한 채 브라우저에서 검증해줘.
+```
+
+Codex에서는 다음처럼 역할을 직접 지정할 수 있습니다.
+
+```text
+harness_spark_ui_iteration 역할로 기존 UI의 이 한 가지 변경만 처리해줘.
+```
+
+`~/.codex/agents/harness-spark-ui-iteration.toml` 링크가 없다면 Spark를 강제로 호출하지 않습니다. 로그인이나 구독 상태가 바뀐 뒤 `./install.sh`를 다시 실행하면 자동으로 재확인합니다.
 
 ## 자연스럽게 자동 오케스트레이션시키는 프롬프트
 
@@ -105,6 +139,7 @@ codex exec --ephemeral --model gpt-5.6-luna \
 자동으로 맡기는 항목:
 
 - 작업 규모와 위험도 분류
+- 접근 가능할 때만 작은 기존 UI 수정에 Spark 사용, 불가능하면 Sonnet으로 자동 전환
 - 필요한 경우 Sonnet 조사·구현 역할 호출
 - 의미 있는 변경에 대한 독립 검토
 - build, lint, typecheck, test 실행
@@ -128,12 +163,25 @@ claude --agent harness-judge-opus
 
 ## 업데이트
 
+로컬 PC에서 이 대화에서 만든 기본 경로를 사용한다면:
+
 ```bash
-cd claudex5-engineering-harness
-git pull --ff-only
+cd ~/Documents/github/claudex5-engineering-harness
+git pull --ff-only origin main
 ./install.sh
 ./verify.sh --strict
 ```
+
+VPS 또는 다른 서버에서는 실제로 복제한 경로로 이동해서 같은 순서로 실행합니다. 예를 들어 홈 디렉터리에 복제했다면:
+
+```bash
+cd ~/claudex5-engineering-harness
+git pull --ff-only origin main
+./install.sh
+./verify.sh --strict
+```
+
+`git pull`은 공개 설정 파일을 업데이트하고, `./install.sh`는 해당 머신의 현재 계정으로 Spark 접근 여부를 다시 확인한 뒤 전역 지침과 역할을 안전하게 병합합니다. 인증은 머신별로 그대로 유지되며 다른 장비로 복사되지 않습니다.
 
 ## 제거
 
@@ -142,6 +190,7 @@ git pull --ff-only
 ```
 
 사용자 지침과 기존 설정은 남기고, 이 저장소가 관리하는 링크·지침 블록·Codex 역할 표만 제거합니다. Claude, Codex, 로그인과 플러그인은 삭제하지 않습니다.
+조건부 Spark 링크와 역할 표도 하네스가 만든 경우에만 함께 제거합니다.
 
 ## 문제 해결
 
@@ -166,5 +215,15 @@ codex login --device-auth
 ```
 
 모델을 사용할 수 없을 때는 `/model`에서 사용 가능한 Claude 모델을 확인하고 위 Opus 대체 역할을 수동으로 선택합니다. 저장소 경로를 옮겨 링크가 끊어졌다면 출력된 `harness-*` 심볼릭 링크만 확인해 제거한 뒤 새 위치에서 `./install.sh`를 다시 실행합니다.
+
+Spark 상태가 현재 계정과 맞지 않는다는 경고가 나오면 다음을 실행합니다.
+
+```bash
+codex login status
+./install.sh
+./verify.sh
+```
+
+일시적인 네트워크 또는 인증 확인 실패는 설치 실패로 처리하지 않습니다. 그동안 Sonnet 대체 경로가 유지되며, 접근이 복구된 뒤 설치를 다시 실행하면 Spark 역할이 활성화됩니다.
 
 전체 구조, 백업 복구, 보안 경계와 기여 방법은 루트 [README](../README.md)를 참고하세요.

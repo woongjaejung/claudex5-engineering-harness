@@ -171,6 +171,28 @@ for mapping in "${expected_links[@]}"; do
   fi
 done
 
+spark_link="$target_home/.codex/agents/harness-spark-ui-iteration.toml"
+spark_target="$repo_root/codex/agents/harness-spark-ui-iteration.toml"
+spark_link_installed=0
+spark_table_installed=0
+spark_installed=0
+if [[ -L "$spark_link" && "$(readlink "$spark_link" 2>/dev/null || true)" == "$spark_target" ]]; then
+  spark_link_installed=1
+fi
+if [[ -f "$target_home/.codex/config.toml" ]] && \
+   grep -Eq '^\[agents\.harness_spark_ui_iteration\][[:space:]]*(#.*)?$' \
+     "$target_home/.codex/config.toml"; then
+  spark_table_installed=1
+fi
+if [[ "$spark_link_installed" -eq 1 && "$spark_table_installed" -eq 1 ]]; then
+  spark_installed=1
+  pass "conditional Codex-Spark role is installed consistently"
+elif [[ "$spark_link_installed" -eq 0 && "$spark_table_installed" -eq 0 ]]; then
+  pass "conditional Codex-Spark role is consistently disabled"
+else
+  fail "Codex-Spark role link and agent table are inconsistent; rerun ./install.sh"
+fi
+
 if [[ "$failures" -eq 0 ]]; then
   pass "managed blocks and role links are installed exactly once"
 fi
@@ -242,6 +264,28 @@ if command -v codex >/dev/null 2>&1; then
     fail "Codex authentication unavailable; run: codex login --device-auth"
   else
     warn "Codex authentication unavailable; run: codex login --device-auth"
+  fi
+  if [[ -n "$python_bin" ]]; then
+    set +e
+    spark_state="$(HOME="$target_home" "$python_bin" "$repo_root/scripts/spark_probe.py" \
+      --codex-bin "$(command -v codex)" 2>/dev/null)"
+    spark_probe_status=$?
+    set -e
+    if [[ "$spark_probe_status" -eq 0 && "$spark_state" == "available" ]]; then
+      if [[ "$spark_installed" -eq 1 ]]; then
+        pass "Codex-Spark access is available and its role is enabled"
+      else
+        warn "Codex-Spark is now available but its role is disabled; rerun ./install.sh"
+      fi
+    elif [[ "$spark_probe_status" -eq 1 && "$spark_state" == "unavailable" ]]; then
+      if [[ "$spark_installed" -eq 1 ]]; then
+        warn "Codex-Spark is no longer available but its role is enabled; rerun ./install.sh"
+      else
+        pass "Codex-Spark is unavailable and the Sonnet fallback is active"
+      fi
+    else
+      warn "Codex-Spark availability could not be confirmed; installed state was left unchanged"
+    fi
   fi
 elif [[ "$strict" -eq 1 ]]; then
   fail "Codex CLI is not installed"

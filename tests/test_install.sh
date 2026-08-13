@@ -34,6 +34,7 @@ run_install
 
 [[ -L "$test_home/.claude/agents/harness-orchestrator.md" ]]
 [[ -L "$test_home/.codex/agents/harness-sol-research.toml" ]]
+[[ ! -e "$test_home/.codex/agents/harness-spark-ui-iteration.toml" ]]
 [[ "$(readlink "$test_home/.claude/agents/harness-orchestrator.md")" == "$repo_root/claude/agents/harness-orchestrator.md" ]]
 grep -q "existing Claude instructions" "$test_home/.claude/CLAUDE.md"
 grep -q "existing Codex instructions" "$test_home/.codex/AGENTS.md"
@@ -113,5 +114,68 @@ fi
 [[ "$(cat "$rollback_home/.claude/CLAUDE.md")" == "before rollback" ]]
 [[ "$(cat "$rollback_home/.codex/AGENTS.md")" == "before Codex rollback" ]]
 [[ ! -e "$rollback_home/.claude/agents/harness-orchestrator.md" ]]
+
+fake_bin="$test_root/fake-bin"
+spark_home="$test_root/spark-home"
+mkdir -p "$fake_bin" "$spark_home/.claude" "$spark_home/.codex"
+printf '%s\n' '{}' > "$spark_home/.claude/settings.json"
+printf '%s\n' '' > "$spark_home/.codex/config.toml"
+cat > "$fake_bin/claude" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --version) printf '%s\n' '2.1.226 (Claude Code)' ;;
+  auth) exit 0 ;;
+  plugin) printf '%s\n' 'codex@openai-codex' ;;
+  *) exit 0 ;;
+esac
+EOF
+cat > "$fake_bin/codex" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --version) printf '%s\n' 'codex-cli 0.147.0' ;;
+  login) exit 0 ;;
+  app-server)
+    IFS= read -r initialize
+    printf '%s\n' '{"id":0,"result":{}}'
+    IFS= read -r initialized
+    IFS= read -r request
+    if [[ "${FAKE_SPARK_AVAILABLE:-0}" == "1" ]]; then
+      printf '%s\n' '{"id":1,"result":{"data":[{"id":"gpt-5.3-codex-spark","model":"gpt-5.3-codex-spark"}],"nextCursor":null}}'
+    else
+      printf '%s\n' '{"id":1,"result":{"data":[{"id":"gpt-5.6-sol","model":"gpt-5.6-sol"}],"nextCursor":null}}'
+    fi
+    ;;
+  *) exit 0 ;;
+esac
+EOF
+chmod +x "$fake_bin/claude" "$fake_bin/codex"
+
+PATH="$fake_bin:$PATH" FAKE_SPARK_AVAILABLE=1 CLAUDEX5_PYTHON="$python_bin" \
+  CLAUDEX5_SKIP_PLUGIN=1 "$repo_root/install.sh" --home "$spark_home"
+[[ -L "$spark_home/.codex/agents/harness-spark-ui-iteration.toml" ]]
+grep -q '\[agents.harness_spark_ui_iteration\]' "$spark_home/.codex/config.toml"
+
+if PATH="$fake_bin:$PATH" FAKE_SPARK_AVAILABLE=0 CLAUDEX5_PYTHON="$python_bin" \
+  CLAUDEX5_SKIP_PLUGIN=1 CLAUDEX5_VERIFY_FAIL=1 \
+  "$repo_root/install.sh" --home "$spark_home" >/dev/null 2>&1; then
+  printf '%s\n' "injected verification failure must reject Spark disable reconciliation" >&2
+  exit 1
+fi
+[[ -L "$spark_home/.codex/agents/harness-spark-ui-iteration.toml" ]]
+grep -q '\[agents.harness_spark_ui_iteration\]' "$spark_home/.codex/config.toml"
+
+PATH="$fake_bin:$PATH" FAKE_SPARK_AVAILABLE=0 CLAUDEX5_PYTHON="$python_bin" \
+  CLAUDEX5_SKIP_PLUGIN=1 "$repo_root/install.sh" --home "$spark_home"
+[[ ! -e "$spark_home/.codex/agents/harness-spark-ui-iteration.toml" ]]
+! grep -q '\[agents.harness_spark_ui_iteration\]' "$spark_home/.codex/config.toml"
+
+spark_collision_home="$test_root/spark-collision-home"
+mkdir -p "$spark_collision_home/.codex/agents"
+printf '%s\n' "user-owned Spark role" > "$spark_collision_home/.codex/agents/harness-spark-ui-iteration.toml"
+if "$repo_root/link.sh" --home "$spark_collision_home" --enable-spark >/dev/null 2>&1; then
+  printf '%s\n' "Spark registration unexpectedly overwrote a collision" >&2
+  exit 1
+fi
+grep -q "user-owned Spark role" "$spark_collision_home/.codex/agents/harness-spark-ui-iteration.toml"
 
 printf '%s\n' "integration tests: PASS"

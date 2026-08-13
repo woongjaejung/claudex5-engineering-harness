@@ -17,11 +17,23 @@ from pathlib import Path
 START_MARKER = "<!-- BEGIN CLAUDEX5 ENGINEERING HARNESS -->"
 END_MARKER = "<!-- END CLAUDEX5 ENGINEERING HARNESS -->"
 
-CODEX_AGENT_FILES = {
+BASE_CODEX_AGENT_FILES = {
     "harness_sol_research": "harness-sol-research.toml",
     "harness_luna_implementation": "harness-luna-implementation.toml",
     "harness_sol_review": "harness-sol-review.toml",
     "harness_sol_adversarial_review": "harness-sol-adversarial-review.toml",
+}
+SPARK_AGENT_FILES = {
+    "harness_spark_ui_iteration": "harness-spark-ui-iteration.toml",
+}
+ALL_CODEX_AGENT_FILES = {**BASE_CODEX_AGENT_FILES, **SPARK_AGENT_FILES}
+
+CODEX_AGENT_DESCRIPTIONS = {
+    "harness_sol_research": "Independent difficult-problem research in a fresh context.",
+    "harness_luna_implementation": "Bounded alternative implementation with explicit acceptance criteria.",
+    "harness_sol_review": "Independent normal code review in a fresh context.",
+    "harness_sol_adversarial_review": "Adversarial review of assumptions, edge cases, and failure modes.",
+    "harness_spark_ui_iteration": "Fast, bounded iteration on one existing user-interface detail.",
 }
 
 _WRITE_JOURNAL: dict[Path, str] | None = None
@@ -183,7 +195,7 @@ def _section_bounds(lines: list[str]) -> list[tuple[int, int, str]]:
 def _remove_owned_codex_sections(text: str, harden: bool) -> str:
     lines = text.splitlines(keepends=True)
     remove_indices: set[int] = set()
-    owned = {f"agents.{name}" for name in CODEX_AGENT_FILES}
+    owned = {f"agents.{name}" for name in ALL_CODEX_AGENT_FILES}
     for start, end, name in _section_bounds(lines):
         if name in owned or (harden and name == 'projects."/"'):
             remove_indices.update(range(start, end))
@@ -211,8 +223,10 @@ def _quote_toml(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def merge_codex_config(path: Path, agent_dir: Path, harden: bool) -> list[str]:
-    """Merge multi-agent registration and four namespaced agent tables."""
+def merge_codex_config(
+    path: Path, agent_dir: Path, harden: bool, enable_spark: bool = False
+) -> list[str]:
+    """Merge required agents and the optional, capability-gated Spark agent."""
     assert_safe_target(path)
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
     parsed_existing = parse_toml(existing)
@@ -227,13 +241,11 @@ def merge_codex_config(path: Path, agent_dir: Path, harden: bool) -> list[str]:
     merged = _remove_owned_codex_sections(existing, harden=harder_bool(harden))
     merged = _enable_multi_agent(merged)
     tables: list[str] = []
-    for name, filename in CODEX_AGENT_FILES.items():
-        description = {
-            "harness_sol_research": "Independent difficult-problem research in a fresh context.",
-            "harness_luna_implementation": "Bounded alternative implementation with explicit acceptance criteria.",
-            "harness_sol_review": "Independent normal code review in a fresh context.",
-            "harness_sol_adversarial_review": "Adversarial review of assumptions, edge cases, and failure modes.",
-        }[name]
+    agent_files = dict(BASE_CODEX_AGENT_FILES)
+    if enable_spark:
+        agent_files.update(SPARK_AGENT_FILES)
+    for name, filename in agent_files.items():
+        description = CODEX_AGENT_DESCRIPTIONS[name]
         tables.append(
             f"[agents.{name}]\n"
             f"description = {_quote_toml(description)}\n"
@@ -270,7 +282,9 @@ def remove_harness_config(home: Path) -> None:
         atomic_write(config_path, cleaned)
 
 
-def install_from_repository(home: Path, repository: Path, harden: bool) -> list[str]:
+def install_from_repository(
+    home: Path, repository: Path, harden: bool, enable_spark: bool = False
+) -> list[str]:
     global _WRITE_JOURNAL
     targets = (
         home / ".claude" / "CLAUDE.md",
@@ -295,7 +309,11 @@ def install_from_repository(home: Path, repository: Path, harden: bool) -> list[
             (repository / "codex" / "managed-AGENTS.md").read_text(encoding="utf-8"),
         )
         warnings.extend(merge_claude_settings(targets[2], True, harden))
-        warnings.extend(merge_codex_config(targets[3], home / ".codex" / "agents", harden))
+        warnings.extend(
+            merge_codex_config(
+                targets[3], home / ".codex" / "agents", harden, enable_spark=enable_spark
+            )
+        )
     except Exception:
         for path, original in originals.items():
             expected_digest = write_journal.get(path)
@@ -320,13 +338,16 @@ def main() -> int:
     parser.add_argument("--home", required=True, type=Path)
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--harden", action="store_true")
+    parser.add_argument("--enable-spark", action="store_true")
     args = parser.parse_args()
 
     home = args.home.expanduser().resolve()
     if str(home) == "/":
         parser.error("--home must not be /")
     if args.action == "install":
-        for warning in install_from_repository(home, args.repo.resolve(), args.harden):
+        for warning in install_from_repository(
+            home, args.repo.resolve(), args.harden, enable_spark=args.enable_spark
+        ):
             print(f"WARNING: {warning}")
     else:
         remove_harness_config(home)

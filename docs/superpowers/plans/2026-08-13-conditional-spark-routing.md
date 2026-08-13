@@ -111,7 +111,7 @@ Explain automatic eligibility, fallback, explicit role invocation, local/VPS upd
 
 - [ ] **Step 4: Check documentation and whitespace**
 
-Run: `git diff --check && ! grep -P '[\x{AC00}-\x{D7A3}]' README.md`
+Run: `git diff --check && python3 -c 'import re, pathlib; raise SystemExit(1 if re.search(r"[가-힣]", pathlib.Path("README.md").read_text()) else 0)'`
 
 Expected: no whitespace errors and no Hangul in the root README.
 

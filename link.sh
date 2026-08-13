@@ -7,6 +7,7 @@ source "$repo_root/scripts/common.sh"
 
 target_home="${HOME:-}"
 journal=""
+enable_spark=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --home)
@@ -19,6 +20,7 @@ while [[ $# -gt 0 ]]; do
       journal="$2"
       shift 2
       ;;
+    --enable-spark) enable_spark=1; shift ;;
     *) claudex5_die "unknown argument: $1" ;;
   esac
 done
@@ -53,6 +55,16 @@ destinations=(
   "$target_home/.codex/agents/harness-sol-adversarial-review.toml"
 )
 
+spark_source="$repo_root/codex/agents/harness-spark-ui-iteration.toml"
+spark_destination="$target_home/.codex/agents/harness-spark-ui-iteration.toml"
+remove_managed_spark=0
+if [[ "$enable_spark" -eq 1 ]]; then
+  sources+=("$spark_source")
+  destinations+=("$spark_destination")
+elif [[ -L "$spark_destination" && "$(readlink "$spark_destination")" == "$spark_source" ]]; then
+  remove_managed_spark=1
+fi
+
 for index in "${!sources[@]}"; do
   source_path="${sources[$index]}"
   destination="${destinations[$index]}"
@@ -65,13 +77,19 @@ for index in "${!sources[@]}"; do
   fi
 done
 
+if [[ "$remove_managed_spark" -eq 1 ]]; then
+  rm -f "$spark_destination"
+  [[ -n "$journal" ]] && printf 'removed\t%s\t%s\n' "$spark_destination" "$spark_source" >> "$journal"
+  printf 'REMOVED\t%s\n' "$spark_destination"
+fi
+
 mkdir -p "$target_home/.claude/agents" "$target_home/.codex/agents"
 for index in "${!sources[@]}"; do
   source_path="${sources[$index]}"
   destination="${destinations[$index]}"
   if [[ ! -L "$destination" ]]; then
     ln -s "$source_path" "$destination"
-    [[ -n "$journal" ]] && printf '%s\n' "$destination" >> "$journal"
+    [[ -n "$journal" ]] && printf 'created\t%s\t%s\n' "$destination" "$source_path" >> "$journal"
     printf 'CREATED\t%s\n' "$destination"
   fi
 done

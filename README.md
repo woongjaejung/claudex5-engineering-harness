@@ -25,12 +25,16 @@ You normally speak to Claude as usual. The global policy keeps small tasks direc
 ```mermaid
 flowchart TD
     U["Ordinary user request"] --> C{"Main Claude session classifies the task"}
-    C -->|"Simple question or tiny low-risk edit"| D["Handle directly"]
+    C -->|"Simple question or tiny non-UI edit"| D["Handle directly"]
+    C -->|"One small existing-UI change"| SA{"Spark role installed?"}
+    SA -->|"Yes"| SP["Codex-Spark<br/>fast bounded UI iteration"]
+    SA -->|"No or run fails"| I
     C -->|"Complex, ambiguous, multi-file, or risky"| O["Main session coordinates the workflow"]
     O --> R["Claude Sonnet 5 high<br/>read-only research"]
     O --> I["Claude Sonnet 5 high<br/>primary implementation"]
     O --> SR["Codex Sol high<br/>independent difficult-problem research"]
     SR --> LI["Codex Luna max<br/>bounded alternative implementation"]
+    SP --> G
     I --> AR["Claude Opus 5 high<br/>architecture review"]
     I --> NR["Codex Sol high<br/>normal review in fresh context"]
     I --> XR["Codex Sol high<br/>adversarial review in fresh context"]
@@ -52,6 +56,7 @@ The main session—not a nested subagent—is the coordinator because Claude Cod
 | Main coordinator | Current Claude session; Fable 5 high recommended | Owns requirements, routing, integration, and final verification | Automatic for complex work |
 | Researcher | Claude Sonnet 5 / high | Repository exploration before unclear implementation | Automatic when useful |
 | Implementer | Claude Sonnet 5 / high | Primary scoped implementation | Automatic |
+| Fast UI iteration | Codex-Spark | One small change to an existing UI, only when account access is confirmed | Automatic and conditional; Sonnet fallback |
 | Implementer escalation | Claude Opus 5 / high | Sonnet is demonstrably blocked or a change is unusually risky | Manual fallback |
 | Independent research | Codex Sol / high | Alternative diagnosis or difficult-problem analysis | Automatic when materially useful |
 | Alternative implementation | Codex Luna / max | Only when files, behavior, and acceptance criteria are bounded | Explicit routing recommended |
@@ -62,7 +67,9 @@ The main session—not a nested subagent—is the coordinator because Claude Cod
 | Judge fallback | Claude Opus 5 / high | Fable unavailable or evidence conflict is high risk | Manual fallback |
 | Quality gate | Ordinary project tools | Build, lint, typecheck, and test | Always before completion when available |
 
-Model availability depends on your Claude/ChatGPT plan and installed CLI versions. Fallbacks are intentionally manual: silently switching to a more expensive or behaviorally different model would hide an important decision.
+Model availability depends on your Claude/ChatGPT plan and installed CLI versions. Opus fallbacks are intentionally manual because they change cost and behavior. Spark is the exception: if it is unavailable, the bounded UI route falls back to Sonnet automatically.
+
+During the current research preview, [OpenAI documents Codex-Spark as a ChatGPT Pro feature](https://learn.chatgpt.com/docs/agent-configuration/speed). The installer does not guess the plan name. It calls the official App Server [`model/list`](https://learn.chatgpt.com/docs/app-server) method and enables Spark only when the authenticated account exposes the exact `gpt-5.3-codex-spark` model. This check starts no model turn and stores no account or model-catalog data.
 
 ## Requirements
 
@@ -104,8 +111,11 @@ Then authenticate once on that machine:
 ```bash
 claude
 codex login --device-auth
+./install.sh
 ./verify.sh --strict
 ```
+
+The second install is intentional: the bootstrap run cannot enable account-gated Spark before Codex authentication exists.
 
 `--bootstrap` installs missing prerequisites from official distribution sources. Claude Code and Codex versions are pinned in the script for reproducibility; update the repository before bootstrapping a new machine. The upstream Claude installer, npm registry, and plugin marketplace remain external supply-chain trust boundaries, so review `bootstrap-system.sh` before running it on a sensitive system. It does **not** transfer credentials from another machine.
 
@@ -143,6 +153,15 @@ Good prompts still improve routing because they provide an outcome and constrain
 Implement the payment retry logic while preserving API compatibility.
 Review concurrent requests and partial failures, then report the test results.
 ```
+
+A narrow UI request naturally qualifies for Spark when it is installed:
+
+```text
+In the existing settings dialog, reduce the Save button's top spacing to match the other form actions.
+Do not change behavior or data flow, and verify the result in the browser.
+```
+
+If Spark is not available on that computer or server, the same request continues with the Sonnet implementer. Ordinary automatic routing does not stop merely because the optional model is absent.
 
 ## Explicit role calls
 
@@ -185,6 +204,20 @@ Inside Claude Code, use the official plugin commands:
 
 `--fresh` starts an independent Codex context instead of inheriting conclusions from a prior rescue thread.
 
+When the installer reports that Spark is enabled, you can request its narrow route explicitly:
+
+```text
+/codex:rescue --fresh --model spark Change only the existing profile card spacing, preserve behavior, and verify it in the browser.
+```
+
+Or, in direct Codex use:
+
+```text
+Use harness_spark_ui_iteration for this one bounded change to the existing UI.
+```
+
+Do not force Spark when `~/.codex/agents/harness-spark-ui-iteration.toml` is absent. Rerun `./install.sh` after authenticating or changing subscription access; the installer will reconcile the role automatically.
+
 The official plugin 1.0.0 accepts reasoning effort only through `xhigh`. For an exact Luna Max run, invoke Codex directly from a trusted project directory and give it a tightly bounded task:
 
 ```bash
@@ -209,6 +242,7 @@ Use harness_sol_adversarial_review to review the current change without editing 
 Automatic:
 
 - Task complexity classification
+- Account-aware Spark routing for one small existing-UI change, with automatic Sonnet fallback
 - Read-only research before unclear implementation
 - Sonnet implementation for scoped work
 - Independent review for meaningful changes
@@ -264,6 +298,7 @@ git pull --ff-only
 ```
 
 Agent definitions update immediately through their links; rerunning the installer refreshes managed instruction and configuration blocks.
+It also rechecks Spark access on that machine, enabling or removing only the harness-owned optional role as needed.
 
 ## Uninstall
 
@@ -282,6 +317,7 @@ The repository never copies or commits:
 - Claude account state such as `~/.claude/.claude.json`
 - credentials, tokens, cookies, session history, logs, or SQLite state
 - values of API credential environment variables
+- model-list responses or subscription details
 
 `.gitignore` is only a convenience, not the security boundary. `verify.sh` scans tracked and untracked Git candidates for forbidden credential filenames and likely secret formats. It reports file paths and rule IDs, never the matched value.
 
@@ -300,6 +336,16 @@ See [SECURITY.md](SECURITY.md) for private vulnerability reporting.
 ### A model is unavailable
 
 Confirm current models with Claude's `/model` picker or Codex model selection. Use the corresponding Opus fallback agent manually. Do not rename agent files just to hide an unavailable model; model support depends on account and CLI version.
+
+For Spark specifically, authenticate Codex and reconcile the optional role:
+
+```bash
+codex login status
+./install.sh
+./verify.sh
+```
+
+`verify.sh` warns when current Spark access and the installed role disagree. A temporary network or authentication failure does not break installation; Sonnet remains the fallback. If access is later restored, rerun the installer.
 
 ### Claude does not show a newly installed agent
 
