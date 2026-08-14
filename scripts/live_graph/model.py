@@ -123,6 +123,7 @@ def new_snapshot(session_id: str, cwd: str, timestamp: str) -> dict[str, object]
                 "label": sanitize_label(session_id),
                 "state": "running",
                 "sequence": 0,
+                "created_at": timestamp,
                 "started_at": timestamp,
             }
         },
@@ -141,9 +142,11 @@ def _node_fields(node_id: str, payload: dict[str, Any], sequence: int, timestamp
         "label": sanitize_label(payload.get("label", payload.get("title", node_id))),
         "state": payload.get("state", "waiting"),
         "sequence": sequence,
+        "created_at": timestamp,
     }
     if node["state"] not in NODE_STATES:
         raise ValueError("invalid node state")
+    _merge_metadata(node, payload)
     for key in ("role", "model", "effort"):
         value = payload.get(key)
         if isinstance(value, str) and value:
@@ -153,7 +156,62 @@ def _node_fields(node_id: str, payload: dict[str, Any], sequence: int, timestamp
         node.update({key: value for key, value in ROLE_METADATA[role].items() if key not in node})
     if node["state"] == "running":
         node["started_at"] = timestamp
+    elif node["state"] in TERMINAL_STATES:
+        node["finished_at"] = timestamp
     return node
+
+
+def _merge_metadata(node: dict[str, Any], payload: dict[str, Any]) -> None:
+    label = payload.get("label", payload.get("title"))
+    if isinstance(label, str) and label:
+        node["label"] = sanitize_label(label)
+    description = payload.get("description")
+    if isinstance(description, str) and description:
+        node["description"] = sanitize_label(description, limit=160)
+    superseded_by = payload.get("superseded_by")
+    if superseded_by is not None:
+        node["superseded_by"] = validate_identifier(
+            superseded_by, name="superseding node identifier"
+        )
+    for key in ("role", "model", "effort"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            node[key] = sanitize_label(value)
+
+
+def _reconcile_compatibility_task(
+    snapshot: dict[str, Any], stable_id: str, payload: dict[str, Any]
+) -> None:
+    """Preserve a single compatible task as evidence while linking its stable successor."""
+    nodes: dict[str, dict[str, Any]] = snapshot["nodes"]
+    explicit = payload.get("supersedes")
+    if explicit is not None:
+        compatibility_id = validate_identifier(explicit, name="compatibility task identifier")
+        if not compatibility_id.startswith("task:compat-"):
+            raise ValueError("invalid compatibility task identifier")
+        candidate_ids = [compatibility_id] if compatibility_id in nodes else []
+    else:
+        label = payload.get("label", payload.get("title"))
+        safe_label = sanitize_label(label) if isinstance(label, str) else ""
+        candidate_ids = [
+            node_id
+            for node_id, node in nodes.items()
+            if node_id.startswith("task:compat-")
+            and not node.get("superseded_by")
+            and safe_label
+            and node.get("label") == safe_label
+        ]
+        if len(candidate_ids) != 1:
+            return
+
+    for compatibility_id in candidate_ids:
+        candidate = nodes[compatibility_id]
+        if candidate.get("superseded_by"):
+            continue
+        candidate["superseded_by"] = stable_id
+        for edge in list(snapshot["edges"].values()):
+            if edge["source"] == compatibility_id and edge["kind"] == "depends_on":
+                _add_edge(snapshot, stable_id, edge["target"], "depends_on")
 
 
 def _attach_parent(snapshot: dict[str, Any], node_id: str, payload: dict[str, Any]) -> None:
@@ -201,7 +259,10 @@ def reduce_event(snapshot: dict[str, object], event: dict[str, object]) -> dict[
         if event_type == "task.created":
             effective.setdefault("kind", "task")
             effective.setdefault("state", "waiting")
+            if not node_id.startswith("task:compat-"):
+                _reconcile_compatibility_task(snapshot, node_id, effective)  # type: ignore[arg-type]
         nodes.setdefault(node_id, _node_fields(node_id, effective, sequence, timestamp))
+        _merge_metadata(nodes[node_id], effective)
         _attach_parent(snapshot, node_id, effective)  # type: ignore[arg-type]
         _add_dependencies(snapshot, node_id, effective)  # type: ignore[arg-type]
     elif event_type == "node.started":
@@ -215,10 +276,7 @@ def reduce_event(snapshot: dict[str, object], event: dict[str, object]) -> dict[
         elif existing["state"] not in TERMINAL_STATES:
             existing["state"] = "running"
             existing.setdefault("started_at", timestamp)
-            for key in ("role", "model", "effort"):
-                value = payload.get(key)
-                if isinstance(value, str) and value and key not in existing:
-                    existing[key] = sanitize_label(value)
+            _merge_metadata(existing, payload)
             role = existing.get("role")
             if isinstance(role, str) and role in ROLE_METADATA:
                 for key, value in ROLE_METADATA[role].items():
@@ -228,6 +286,8 @@ def reduce_event(snapshot: dict[str, object], event: dict[str, object]) -> dict[
         state = payload.get("state")
         if state not in NODE_STATES:
             raise ValueError("invalid terminal or task state")
+        if event_type == "task.updated" and not node_id.startswith("task:compat-"):
+            _reconcile_compatibility_task(snapshot, node_id, payload)  # type: ignore[arg-type]
         existing = nodes.get(node_id)
         if existing is None:
             effective = dict(payload)
@@ -237,9 +297,16 @@ def reduce_event(snapshot: dict[str, object], event: dict[str, object]) -> dict[
             snapshot["degraded"] = True
             _attach_parent(snapshot, node_id, effective)  # type: ignore[arg-type]
         elif existing["state"] not in TERMINAL_STATES or existing["state"] == state:
+            _merge_metadata(existing, payload)
             existing["state"] = state
+            if state == "running":
+                existing.setdefault("started_at", timestamp)
             if state in TERMINAL_STATES:
-                existing["finished_at"] = timestamp
+                existing.setdefault("finished_at", timestamp)
+    elif event_type == "node.updated":
+        existing = nodes.get(node_id)
+        if existing is not None:
+            _merge_metadata(existing, payload)
     elif event_type == "edge.created":
         target = validate_identifier(payload.get("target"), name="edge target")
         _add_edge(snapshot, node_id, target, str(payload.get("kind", "contains")))  # type: ignore[arg-type]
@@ -248,6 +315,9 @@ def reduce_event(snapshot: dict[str, object], event: dict[str, object]) -> dict[
         checkpoints.append({"sequence": sequence, "timestamp": timestamp, "label": sanitize_label(payload.get("label", "checkpoint"))})
     elif event_type == "session.started":
         nodes[snapshot["root_node_id"]]["state"] = "running"  # type: ignore[index]
+        title = payload.get("title")
+        if isinstance(title, str) and title:
+            snapshot["title"] = sanitize_label(title)
         snapshot["status"] = "running"
     elif event_type == "session.ended":
         state = payload.get("state", "passed")

@@ -26,13 +26,8 @@ jobs:
       - name: Run Python tests
         run: python3 -m unittest discover -s tests -v
 
-      - name: Check embedded dashboard JavaScript
-        run: |
-          python3 - <<'PY' > /tmp/claudex5-app.js
-          from scripts.live_graph.web import APP_JS
-          print(APP_JS)
-          PY
-          node --check /tmp/claudex5-app.js
+      - name: Check dashboard JavaScript
+        run: node --check scripts/live_graph/assets/app.mjs
 
       - name: Run isolated installation tests
         env:

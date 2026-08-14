@@ -8,6 +8,23 @@ test_root="$(mktemp -d)"
 trap 'rm -rf "$test_root"' EXIT
 test_home="$test_root/home"
 mkdir -p "$test_home/.claude" "$test_home/.codex"
+test_fake_bin="$test_root/initial-fake-bin"
+mkdir -p "$test_fake_bin"
+cat > "$test_fake_bin/claude" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --version) printf '%s\n' '2.1.32' ;;
+  *) exit 0 ;;
+esac
+EOF
+cat > "$test_fake_bin/codex" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --version) printf '%s\n' 'codex-cli test' ;;
+  *) exit 0 ;;
+esac
+EOF
+chmod +x "$test_fake_bin/claude" "$test_fake_bin/codex"
 
 printf '%s\n' "existing Claude instructions" > "$test_home/.claude/CLAUDE.md"
 printf '%s\n' "existing Codex instructions" > "$test_home/.codex/AGENTS.md"
@@ -26,7 +43,7 @@ command = "keep-command"
 EOF
 
 run_install() {
-  CLAUDEX5_PYTHON="$python_bin" CLAUDEX5_SKIP_PLUGIN=1 \
+  PATH="$test_fake_bin:$PATH" CLAUDEX5_PYTHON="$python_bin" CLAUDEX5_SKIP_PLUGIN=1 \
     "$repo_root/install.sh" --home "$test_home" --skip-runtime-check
 }
 
@@ -60,15 +77,25 @@ home = Path(sys.argv[1])
 settings = json.loads((home / ".claude/settings.json").read_text())
 assert settings["model"] == "keep-model"
 assert settings["hooks"]["Stop"][0]["command"] == "keep-hook"
-for event in ("SessionStart", "PreToolUse", "PostToolUse", "SubagentStart", "SubagentStop", "Stop", "SessionEnd"):
-    assert sum(
-        1 for group in settings["hooks"][event]
+expected_matchers = {
+    "SessionStart": [None],
+    "PreToolUse": ["TaskCreate"],
+    "PostToolUse": ["TaskCreate", "TaskUpdate", "Agent"],
+    "SubagentStart": [None],
+    "SubagentStop": [None],
+    "Stop": [None],
+    "SessionEnd": [None],
+}
+for event, matchers in expected_matchers.items():
+    owned = [
+        group for group in settings["hooks"][event]
         if group.get("hooks") == [{
             "type": "command",
             "command": "~/.claude/hooks/claudex5-live-graph.py",
             "timeout": 5,
         }]
-    ) == 1
+    ]
+    assert [group.get("matcher") for group in owned] == matchers
 assert settings["statusLine"] == {"type": "command", "command": "keep-status"}
 assert settings["subagentStatusLine"] == {
     "type": "command",
@@ -105,6 +132,39 @@ grep -q 'BEGIN CLAUDEX5' "$test_home/.claude/CLAUDE.md"
 grep -q 'BEGIN CLAUDEX5' "$test_home/.codex/AGENTS.md"
 grep -q '^{invalid$' "$test_home/.claude/settings.json"
 cp "$test_root/settings-before-invalid.json" "$test_home/.claude/settings.json"
+
+atomic_uninstall_home="$test_root/atomic-uninstall-home"
+mkdir -p "$atomic_uninstall_home/.claude/hooks" "$atomic_uninstall_home/.claude" \
+  "$atomic_uninstall_home/.codex" "$atomic_uninstall_home/.local/bin" \
+  "$atomic_uninstall_home/.local/state/claudex5-engineering-harness/runs"
+printf '%s\n' '{}' > "$atomic_uninstall_home/.claude/settings.json"
+printf '%s\n' '' > "$atomic_uninstall_home/.codex/config.toml"
+"$python_bin" "$repo_root/scripts/merge_config.py" install --home "$atomic_uninstall_home" --repo "$repo_root"
+ln -s "$repo_root/bin/claudex5" "$atomic_uninstall_home/.local/bin/claudex5"
+ln -s "$repo_root/claude/hooks/claudex5-live-graph.py" "$atomic_uninstall_home/.claude/hooks/claudex5-live-graph.py"
+printf '%s\n' 'private history remains untouched' > "$atomic_uninstall_home/.local/state/claudex5-engineering-harness/runs/history.jsonl"
+before_atomic_uninstall="$(shasum -a 256 "$atomic_uninstall_home/.claude/settings.json" "$atomic_uninstall_home/.claude/CLAUDE.md" "$atomic_uninstall_home/.codex/config.toml" "$atomic_uninstall_home/.codex/AGENTS.md")"
+if CLAUDEX5_PYTHON="$python_bin" CLAUDEX5_UNINSTALL_FAIL_AFTER_REMOVAL=1 \
+  "$repo_root/uninstall.sh" --home "$atomic_uninstall_home" >/dev/null 2>&1; then
+  printf '%s\n' "injected link-removal failure must fail whole uninstall" >&2
+  exit 1
+fi
+[[ "$(shasum -a 256 "$atomic_uninstall_home/.claude/settings.json" "$atomic_uninstall_home/.claude/CLAUDE.md" "$atomic_uninstall_home/.codex/config.toml" "$atomic_uninstall_home/.codex/AGENTS.md")" == "$before_atomic_uninstall" ]]
+[[ -L "$atomic_uninstall_home/.local/bin/claudex5" ]]
+[[ -L "$atomic_uninstall_home/.claude/hooks/claudex5-live-graph.py" ]]
+grep -q 'private history remains untouched' "$atomic_uninstall_home/.local/state/claudex5-engineering-harness/runs/history.jsonl"
+
+exact_link_home="$test_root/exact-link-home"
+mkdir -p "$exact_link_home/.claude/agents" "$exact_link_home/.claude/hooks" "$exact_link_home/.claude" \
+  "$exact_link_home/.codex" "$exact_link_home/.local/bin"
+printf '%s\n' '{}' > "$exact_link_home/.claude/settings.json"
+printf '%s\n' '' > "$exact_link_home/.codex/config.toml"
+"$python_bin" "$repo_root/scripts/merge_config.py" install --home "$exact_link_home" --repo "$repo_root"
+ln -s "$repo_root/claude/agents/harness-orchestrator.md" "$exact_link_home/.claude/agents/harness-custom.md"
+ln -s "$repo_root/claude/agents/harness-researcher.md" "$exact_link_home/.claude/agents/harness-orchestrator.md"
+CLAUDEX5_PYTHON="$python_bin" "$repo_root/uninstall.sh" --home "$exact_link_home" >/dev/null
+[[ -L "$exact_link_home/.claude/agents/harness-custom.md" ]]
+[[ -L "$exact_link_home/.claude/agents/harness-orchestrator.md" ]]
 
 CLAUDEX5_PYTHON="$python_bin" "$repo_root/uninstall.sh" --home "$test_home"
 [[ ! -e "$test_home/.claude/agents/harness-orchestrator.md" ]]
@@ -210,6 +270,39 @@ if CLAUDEX5_PYTHON="$python_bin" CLAUDEX5_SKIP_PLUGIN=1 \
   exit 1
 fi
 
+nested_symlink_home="$test_root/nested-symlink-home"
+nested_external="$test_root/nested-external"
+mkdir -p "$nested_symlink_home/.claude" "$nested_symlink_home/.codex" "$nested_external"
+ln -s "$nested_external" "$nested_symlink_home/.claude/hooks"
+if "$repo_root/link.sh" --home "$nested_symlink_home" >/dev/null 2>&1; then
+  printf '%s\n' "linker must reject a nested managed-directory symlink" >&2
+  exit 1
+fi
+if CLAUDEX5_PYTHON="$python_bin" CLAUDEX5_SKIP_PLUGIN=1 \
+  "$repo_root/install.sh" --home "$nested_symlink_home" --skip-runtime-check >/dev/null 2>&1; then
+  printf '%s\n' "installer must reject a nested managed-directory symlink" >&2
+  exit 1
+fi
+[[ ! -e "$nested_external/claudex5-live-graph.py" ]]
+
+uninstall_symlink_home="$test_root/uninstall-symlink-home"
+uninstall_external="$test_root/uninstall-external"
+mkdir -p "$uninstall_symlink_home/.claude" "$uninstall_symlink_home/.codex" "$uninstall_external"
+printf '%s\n' '{}' > "$uninstall_symlink_home/.claude/settings.json"
+printf '%s\n' '' > "$uninstall_symlink_home/.codex/config.toml"
+CLAUDEX5_PYTHON="$python_bin" CLAUDEX5_SKIP_PLUGIN=1 \
+  "$repo_root/install.sh" --home "$uninstall_symlink_home" --skip-runtime-check >/dev/null
+mv "$uninstall_symlink_home/.claude/hooks" "$uninstall_symlink_home/.claude/hooks-real"
+ln -s "$repo_root/claude/hooks/claudex5-live-graph.py" "$uninstall_external/claudex5-live-graph.py"
+ln -s "$uninstall_external" "$uninstall_symlink_home/.claude/hooks"
+if CLAUDEX5_PYTHON="$python_bin" \
+  "$repo_root/uninstall.sh" --home "$uninstall_symlink_home" >/dev/null 2>&1; then
+  printf '%s\n' "uninstaller must reject a nested managed-directory symlink" >&2
+  exit 1
+fi
+[[ -L "$uninstall_external/claudex5-live-graph.py" ]]
+grep -q 'BEGIN CLAUDEX5' "$uninstall_symlink_home/.claude/CLAUDE.md"
+
 rollback_home="$test_root/rollback-home"
 mkdir -p "$rollback_home/.claude" "$rollback_home/.codex"
 printf '%s\n' "before rollback" > "$rollback_home/.claude/CLAUDE.md"
@@ -236,7 +329,7 @@ printf '%s\n' '' > "$spark_home/.codex/config.toml"
 cat > "$fake_bin/claude" <<'EOF'
 #!/usr/bin/env bash
 case "${1:-}" in
-  --version) printf '%s\n' '2.1.226 (Claude Code)' ;;
+  --version) printf '%s\n' "${FAKE_CLAUDE_VERSION:-2.1.226 (Claude Code)}" ;;
   auth) exit 0 ;;
   plugin)
     if [[ "${FAKE_FABLE_ADVISOR_ENABLED:-0}" == "1" ]]; then
@@ -271,6 +364,63 @@ case "${1:-}" in
 esac
 EOF
 chmod +x "$fake_bin/claude" "$fake_bin/codex"
+
+unknown_version_home="$test_root/unknown-version-home"
+unknown_version_log="$test_root/unknown-version.log"
+mkdir -p "$unknown_version_home/.claude" "$unknown_version_home/.codex"
+printf '%s\n' '{}' > "$unknown_version_home/.claude/settings.json"
+printf '%s\n' '' > "$unknown_version_home/.codex/config.toml"
+PATH="$fake_bin:$PATH" FAKE_CLAUDE_VERSION='2.1.84-beta.1' CLAUDEX5_PYTHON="$python_bin" \
+  CLAUDEX5_SKIP_PLUGIN=1 "$repo_root/install.sh" --home "$unknown_version_home" --skip-runtime-check \
+  >"$unknown_version_log" 2>&1
+[[ "$(grep -c 'Claude Code version is unavailable or unsupported' "$unknown_version_log")" -eq 1 ]]
+"$python_bin" - "$unknown_version_home" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+hooks = json.loads((Path(sys.argv[1]) / ".claude/settings.json").read_text())["hooks"]
+assert "TaskCreated" not in hooks and "TaskCompleted" not in hooks
+PY
+
+for version in 2.1.32 2.1.33 2.1.84 2.1.226; do
+  version_home="$test_root/version-$version"
+  mkdir -p "$version_home/.claude" "$version_home/.codex"
+  printf '%s\n' '{"hooks":{"PostToolUse":[{"matcher":"Bash","hooks":[{"command":"~/.orca/hook.sh"}]}]}}' > "$version_home/.claude/settings.json"
+  printf '%s\n' '' > "$version_home/.codex/config.toml"
+  PATH="$fake_bin:$PATH" FAKE_CLAUDE_VERSION="$version" CLAUDEX5_PYTHON="$python_bin" \
+    CLAUDEX5_SKIP_PLUGIN=1 "$repo_root/install.sh" --home "$version_home" --skip-runtime-check >/dev/null
+  PATH="$fake_bin:$PATH" FAKE_CLAUDE_VERSION="$version" CLAUDEX5_PYTHON="$python_bin" \
+    CLAUDEX5_SKIP_PLUGIN=1 "$repo_root/install.sh" --home "$version_home" --skip-runtime-check >/dev/null
+  "$python_bin" - "$version_home" "$version" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+home, version = Path(sys.argv[1]), sys.argv[2]
+settings = json.loads((home / ".claude/settings.json").read_text())
+hooks = settings["hooks"]
+assert hooks["PostToolUse"][0]["matcher"] == "Bash"
+expected = {"2.1.32": set(), "2.1.33": {"TaskCompleted"}, "2.1.84": {"TaskCompleted", "TaskCreated"}, "2.1.226": {"TaskCompleted", "TaskCreated"}}[version]
+for event in ("TaskCompleted", "TaskCreated"):
+    if event in expected:
+        assert len(hooks[event]) == 1 and "matcher" not in hooks[event][0]
+    else:
+        assert event not in hooks
+PY
+  PATH="$fake_bin:$PATH" FAKE_CLAUDE_VERSION="$version" CLAUDEX5_PYTHON="$python_bin" \
+    "$repo_root/verify.sh" --home "$version_home" --repo "$repo_root" --structural-only >/dev/null
+  CLAUDEX5_PYTHON="$python_bin" "$repo_root/uninstall.sh" --home "$version_home" >/dev/null
+  "$python_bin" - "$version_home" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+hooks = json.loads((Path(sys.argv[1]) / ".claude/settings.json").read_text())["hooks"]
+assert hooks["PostToolUse"] == [{"matcher": "Bash", "hooks": [{"command": "~/.orca/hook.sh"}]}]
+assert "TaskCreated" not in hooks and "TaskCompleted" not in hooks
+PY
+done
 
 PATH="$fake_bin:$PATH" FAKE_SPARK_AVAILABLE=1 CLAUDEX5_PYTHON="$python_bin" \
   CLAUDEX5_SKIP_PLUGIN=1 "$repo_root/install.sh" --home "$spark_home"

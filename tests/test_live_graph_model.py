@@ -76,6 +76,12 @@ class SnapshotReductionTests(unittest.TestCase):
         )
         self.assertEqual(self.snapshot["nodes"]["agent:abc123"], before)
 
+    def test_session_root_records_its_creation_timestamp(self) -> None:
+        self.assertEqual(
+            self.snapshot["nodes"]["session:session-1"]["created_at"],
+            "2026-08-13T00:00:00Z",
+        )
+
     def test_task_dependencies_create_stable_edges(self) -> None:
         reduce_event(
             self.snapshot,
@@ -176,6 +182,131 @@ class SnapshotReductionTests(unittest.TestCase):
         self.assertEqual(node["state"], "failed")
         self.assertTrue(node["degraded"])
         self.assertTrue(self.snapshot["degraded"])
+
+    def test_node_metadata_and_lifecycle_timestamps_are_idempotent(self) -> None:
+        reduce_event(self.snapshot, self.event(
+            "created", 1, "task.created", "task:5",
+            label="Docker smoke test", description="Verify startup and rollback",
+        ))
+        reduce_event(self.snapshot, self.event(
+            "started", 2, "task.updated", "task:5", state="running",
+        ))
+        reduce_event(self.snapshot, self.event(
+            "metadata", 3, "node.updated", "task:5",
+            description="Verify image startup, health check, and rollback",
+        ))
+        reduce_event(self.snapshot, self.event(
+            "finished", 4, "task.updated", "task:5", state="passed",
+        ))
+        reduce_event(self.snapshot, self.event(
+            "duplicate", 5, "task.updated", "task:5", state="passed",
+        ))
+
+        node = self.snapshot["nodes"]["task:5"]
+        self.assertEqual(node["created_at"], "2026-08-13T00:00:01Z")
+        self.assertEqual(node["started_at"], "2026-08-13T00:00:02Z")
+        self.assertEqual(node["finished_at"], "2026-08-13T00:00:04Z")
+        self.assertEqual(node["description"], "Verify image startup, health check, and rollback")
+
+    def test_session_title_and_running_update_set_metadata_and_first_start_timestamp(self) -> None:
+        reduce_event(self.snapshot, self.event(
+            "session-title", 1, "session.started", "session:session-1",
+            title="  Dashboard\nrun  ",
+        ))
+        reduce_event(self.snapshot, self.event(
+            "created", 2, "task.created", "task:6", label="Prepare",
+        ))
+        reduce_event(self.snapshot, self.event(
+            "running", 3, "task.updated", "task:6", state="running", role="operator",
+        ))
+        reduce_event(self.snapshot, self.event(
+            "running-again", 4, "task.updated", "task:6", state="running", role="reviewer",
+        ))
+
+        self.assertEqual(self.snapshot["title"], "Dashboard run")
+        self.assertEqual(self.snapshot["nodes"]["task:6"]["started_at"], "2026-08-13T00:00:03Z")
+        self.assertEqual(self.snapshot["nodes"]["task:6"]["role"], "reviewer")
+
+    def test_invalid_supersession_identifiers_are_rejected(self) -> None:
+        reduce_event(self.snapshot, self.event("created", 1, "task.created", "task:7", label="Task"))
+
+        with self.assertRaises(ValueError):
+            reduce_event(self.snapshot, self.event(
+                "invalid-successor", 2, "node.updated", "task:7", superseded_by="../task:8",
+            ))
+        with self.assertRaises(ValueError):
+            reduce_event(self.snapshot, self.event(
+                "invalid-compatibility", 3, "task.created", "task:8", supersedes="toolu_123",
+            ))
+
+    def test_ambiguous_compatibility_tasks_are_not_reconciled(self) -> None:
+        for sequence, node_id in ((1, "task:compat-first"), (2, "task:compat-second")):
+            reduce_event(self.snapshot, self.event(
+                f"compat-{sequence}", sequence, "task.created", node_id, label="Implement report",
+            ))
+
+        reduce_event(self.snapshot, self.event(
+            "stable", 3, "task.created", "task:stable", label="Implement report",
+        ))
+
+        self.assertNotIn("superseded_by", self.snapshot["nodes"]["task:compat-first"])
+        self.assertNotIn("superseded_by", self.snapshot["nodes"]["task:compat-second"])
+
+    def test_unique_compatibility_task_is_superseded_by_stable_task(self) -> None:
+        reduce_event(self.snapshot, self.event(
+            "compat", 1, "task.created", "task:compat-tool-use-1",
+            label="Implement report", dependencies=["task:research"],
+        ))
+
+        reduce_event(self.snapshot, self.event(
+            "stable", 2, "task.created", "task:stable", label="Implement report",
+        ))
+
+        self.assertEqual(
+            self.snapshot["nodes"]["task:compat-tool-use-1"]["superseded_by"], "task:stable",
+        )
+        self.assertIn("task:compat-tool-use-1", self.snapshot["nodes"])
+        self.assertEqual(
+            self.snapshot["edges"]["task:stable|depends_on|task:research"],
+            {
+                "id": "task:stable|depends_on|task:research",
+                "source": "task:stable",
+                "target": "task:research",
+                "kind": "depends_on",
+            },
+        )
+
+    def test_stable_first_task_update_reconciles_unique_compatibility_task(self) -> None:
+        reduce_event(self.snapshot, self.event(
+            "compat", 1, "task.created", "task:compat-tool-use-2",
+            label="Run tests", dependencies=["task:build"],
+        ))
+
+        reduce_event(self.snapshot, self.event(
+            "stable-update", 2, "task.updated", "task:tests", label="Run tests", state="running",
+        ))
+
+        self.assertEqual(
+            self.snapshot["nodes"]["task:compat-tool-use-2"]["superseded_by"], "task:tests",
+        )
+        self.assertIn("task:tests|depends_on|task:build", self.snapshot["edges"])
+
+    def test_explicit_compatibility_supersedes_bypasses_label_matching(self) -> None:
+        reduce_event(self.snapshot, self.event(
+            "compat-first", 1, "task.created", "task:compat-first", label="First",
+        ))
+        reduce_event(self.snapshot, self.event(
+            "compat-second", 2, "task.created", "task:compat-second", label="Second",
+        ))
+
+        reduce_event(self.snapshot, self.event(
+            "stable", 3, "task.created", "task:stable", label="Different", supersedes="task:compat-second",
+        ))
+
+        self.assertNotIn("superseded_by", self.snapshot["nodes"]["task:compat-first"])
+        self.assertEqual(
+            self.snapshot["nodes"]["task:compat-second"]["superseded_by"], "task:stable",
+        )
 
     def test_current_harness_roles_have_model_and_effort_metadata(self) -> None:
         expected = {

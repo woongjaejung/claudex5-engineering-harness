@@ -25,21 +25,48 @@ CLAUDEX5_HOOK_COMMAND = {
     "command": "~/.claude/hooks/claudex5-live-graph.py",
     "timeout": 5,
 }
-CLAUDEX5_HOOK_GROUPS = {
-    "SessionStart": {"hooks": [dict(CLAUDEX5_HOOK_COMMAND)]},
-    "PreToolUse": {
-        "matcher": "TaskCreate",
-        "hooks": [dict(CLAUDEX5_HOOK_COMMAND)],
-    },
-    "PostToolUse": {
-        "matcher": "TaskUpdate",
-        "hooks": [dict(CLAUDEX5_HOOK_COMMAND)],
-    },
-    "SubagentStart": {"hooks": [dict(CLAUDEX5_HOOK_COMMAND)]},
-    "SubagentStop": {"hooks": [dict(CLAUDEX5_HOOK_COMMAND)]},
-    "Stop": {"hooks": [dict(CLAUDEX5_HOOK_COMMAND)]},
-    "SessionEnd": {"hooks": [dict(CLAUDEX5_HOOK_COMMAND)]},
+
+
+def owned_group(matcher: str | None = None) -> dict:
+    """Build one exact Claudex5-owned lifecycle hook group."""
+    group = {"hooks": [dict(CLAUDEX5_HOOK_COMMAND)]}
+    if matcher is not None:
+        group["matcher"] = matcher
+    return group
+
+
+BASE_CLAUDEX5_HOOK_GROUPS = {
+    "SessionStart": (owned_group(),),
+    "PreToolUse": (owned_group(matcher="TaskCreate"),),
+    "PostToolUse": (
+        owned_group(matcher="TaskCreate"),
+        owned_group(matcher="TaskUpdate"),
+        owned_group(matcher="Agent"),
+    ),
+    "SubagentStart": (owned_group(),),
+    "SubagentStop": (owned_group(),),
+    "Stop": (owned_group(),),
+    "SessionEnd": (owned_group(),),
 }
+TASK_COMPLETED_HOOK_GROUPS = {"TaskCompleted": (owned_group(),)}
+TASK_CREATED_HOOK_GROUPS = {"TaskCreated": (owned_group(),)}
+CLAUDEX5_HOOK_GROUPS = {
+    **BASE_CLAUDEX5_HOOK_GROUPS,
+    **TASK_COMPLETED_HOOK_GROUPS,
+    **TASK_CREATED_HOOK_GROUPS,
+}
+
+
+def selected_claudex5_hook_groups(
+    enable_task_created: bool = False, enable_task_completed: bool = False
+) -> dict[str, tuple[dict, ...]]:
+    """Return the hook groups supported by the detected Claude Code version."""
+    selected = dict(BASE_CLAUDEX5_HOOK_GROUPS)
+    if enable_task_completed:
+        selected.update(TASK_COMPLETED_HOOK_GROUPS)
+    if enable_task_created:
+        selected.update(TASK_CREATED_HOOK_GROUPS)
+    return selected
 
 BASE_CODEX_AGENT_FILES = {
     "harness_sol_research": "harness-sol-research.toml",
@@ -63,6 +90,15 @@ CODEX_AGENT_DESCRIPTIONS = {
 }
 
 _WRITE_JOURNAL: dict[Path, str] | None = None
+_EXPECTED_STATES: dict[Path, str | None] | None = None
+
+
+def _file_digest(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    if not path.is_file():
+        raise RuntimeError(f"configuration target is not a regular file: {path}")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def parse_toml(text: str) -> dict:
@@ -89,6 +125,9 @@ def atomic_write(path: Path, text: str, mode: int | None = None) -> None:
             os.fsync(handle.fileno())
         if current_mode is not None:
             os.chmod(temporary_name, current_mode)
+        if _EXPECTED_STATES is not None and path in _EXPECTED_STATES:
+            if _file_digest(path) != _EXPECTED_STATES[path]:
+                raise RuntimeError(f"configuration changed concurrently: {path}")
         if _WRITE_JOURNAL is not None:
             _WRITE_JOURNAL[path] = hashlib.sha256(text.encode("utf-8")).hexdigest()
         os.replace(temporary_name, path)
@@ -133,7 +172,13 @@ def merge_instruction_file(path: Path, managed_body: str) -> None:
     atomic_write(path, merged, mode=0o644)
 
 
-def merge_claude_settings(path: Path, enable_plugin: bool, harden: bool = False) -> list[str]:
+def merge_claude_settings(
+    path: Path,
+    enable_plugin: bool,
+    harden: bool = False,
+    enable_task_created: bool = False,
+    enable_task_completed: bool = False,
+) -> list[str]:
     """Merge Claudex5-owned settings while retaining foreign values verbatim."""
     assert_safe_target(path)
     existing = path.read_text(encoding="utf-8") if path.exists() else "{}"
@@ -145,12 +190,20 @@ def merge_claude_settings(path: Path, enable_plugin: bool, harden: bool = False)
     hooks = settings.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise ValueError("hooks must be a JSON object")
-    for event, owned_group in CLAUDEX5_HOOK_GROUPS.items():
+    selected_groups = selected_claudex5_hook_groups(
+        enable_task_created=enable_task_created,
+        enable_task_completed=enable_task_completed,
+    )
+    for event, owned_groups in CLAUDEX5_HOOK_GROUPS.items():
         groups = hooks.setdefault(event, [])
         if not isinstance(groups, list):
             raise ValueError(f"hooks.{event} must be a JSON array")
-        if owned_group not in groups:
-            groups.append(owned_group)
+        retained = [group for group in groups if group not in owned_groups]
+        retained.extend(selected_groups.get(event, ()))
+        if retained:
+            hooks[event] = retained
+        else:
+            hooks.pop(event, None)
     if "subagentStatusLine" not in settings:
         settings["subagentStatusLine"] = dict(CLAUDEX5_SUBAGENT_STATUS_LINE)
     elif settings["subagentStatusLine"] != CLAUDEX5_SUBAGENT_STATUS_LINE:
@@ -305,8 +358,25 @@ def harder_bool(value: bool) -> bool:
     return value
 
 
-def remove_harness_config(home: Path) -> None:
-    global _WRITE_JOURNAL
+def _config_state_text(
+    targets: tuple[Path, ...],
+    originals: dict[Path, tuple[bytes, int] | None],
+    write_journal: dict[Path, str],
+) -> str:
+    rows = []
+    for path in targets:
+        relative = str(path.relative_to(path.parents[1]))
+        if path in write_journal:
+            rows.append(f"{relative}\tpresent\t{write_journal[path]}")
+        elif originals[path] is not None:
+            rows.append(f"{relative}\tpresent\t{hashlib.sha256(originals[path][0]).hexdigest()}")
+        else:
+            rows.append(f"{relative}\tabsent\t-")
+    return "\n".join(rows) + "\n"
+
+
+def remove_harness_config(home: Path, state_file: Path | None = None) -> None:
+    global _EXPECTED_STATES, _WRITE_JOURNAL
     claude_md = home / ".claude" / "CLAUDE.md"
     codex_md = home / ".codex" / "AGENTS.md"
     settings_path = home / ".claude" / "settings.json"
@@ -317,6 +387,10 @@ def remove_harness_config(home: Path) -> None:
         for path in targets
     }
     write_journal: dict[Path, str] = {}
+    _EXPECTED_STATES = {
+        path: hashlib.sha256(original[0]).hexdigest() if original is not None else None
+        for path, original in originals.items()
+    }
     _WRITE_JOURNAL = write_journal
     try:
         for path in (claude_md, codex_md):
@@ -335,11 +409,11 @@ def remove_harness_config(home: Path) -> None:
             changed = False
             hooks = settings.get("hooks")
             if isinstance(hooks, dict):
-                for event, owned_group in CLAUDEX5_HOOK_GROUPS.items():
+                for event, owned_groups in CLAUDEX5_HOOK_GROUPS.items():
                     groups = hooks.get(event)
                     if not isinstance(groups, list):
                         continue
-                    retained = [group for group in groups if group != owned_group]
+                    retained = [group for group in groups if group not in owned_groups]
                     if retained != groups:
                         changed = True
                     if retained:
@@ -362,7 +436,10 @@ def remove_harness_config(home: Path) -> None:
             cleaned = _remove_owned_codex_sections(original, harden=False)
             parse_toml(cleaned)
             atomic_write(config_path, cleaned)
+        if state_file is not None:
+            atomic_write(state_file, _config_state_text(targets, originals, write_journal), mode=0o600)
     except Exception:
+        _EXPECTED_STATES = None
         _WRITE_JOURNAL = None
         for path, original in originals.items():
             expected_digest = write_journal.get(path)
@@ -377,13 +454,19 @@ def remove_harness_config(home: Path) -> None:
                 atomic_write(path, data.decode("utf-8"), mode=mode)
         raise
     finally:
+        _EXPECTED_STATES = None
         _WRITE_JOURNAL = None
 
 
 def install_from_repository(
-    home: Path, repository: Path, harden: bool, enable_spark: bool = False
+    home: Path,
+    repository: Path,
+    harden: bool,
+    enable_spark: bool = False,
+    enable_task_created: bool = False,
+    enable_task_completed: bool = False,
 ) -> list[str]:
-    global _WRITE_JOURNAL
+    global _EXPECTED_STATES, _WRITE_JOURNAL
     targets = (
         home / ".claude" / "CLAUDE.md",
         home / ".codex" / "AGENTS.md",
@@ -396,6 +479,10 @@ def install_from_repository(
     }
     warnings: list[str] = []
     write_journal: dict[Path, str] = {}
+    _EXPECTED_STATES = {
+        path: hashlib.sha256(original[0]).hexdigest() if original is not None else None
+        for path, original in originals.items()
+    }
     _WRITE_JOURNAL = write_journal
     try:
         merge_instruction_file(
@@ -406,13 +493,22 @@ def install_from_repository(
             targets[1],
             (repository / "codex" / "managed-AGENTS.md").read_text(encoding="utf-8"),
         )
-        warnings.extend(merge_claude_settings(targets[2], True, harden))
+        warnings.extend(
+            merge_claude_settings(
+                targets[2],
+                True,
+                harden,
+                enable_task_created=enable_task_created,
+                enable_task_completed=enable_task_completed,
+            )
+        )
         warnings.extend(
             merge_codex_config(
                 targets[3], home / ".codex" / "agents", harden, enable_spark=enable_spark
             )
         )
     except Exception:
+        _EXPECTED_STATES = None
         for path, original in originals.items():
             expected_digest = write_journal.get(path)
             if expected_digest is None:
@@ -426,6 +522,7 @@ def install_from_repository(
                 atomic_write(path, data.decode("utf-8"), mode=mode)
         raise
     finally:
+        _EXPECTED_STATES = None
         _WRITE_JOURNAL = None
     return warnings
 
@@ -437,6 +534,9 @@ def main() -> int:
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--harden", action="store_true")
     parser.add_argument("--enable-spark", action="store_true")
+    parser.add_argument("--enable-task-created", action="store_true")
+    parser.add_argument("--enable-task-completed", action="store_true")
+    parser.add_argument("--state-file", type=Path)
     args = parser.parse_args()
 
     home = args.home.expanduser().resolve()
@@ -444,11 +544,16 @@ def main() -> int:
         parser.error("--home must not be /")
     if args.action == "install":
         for warning in install_from_repository(
-            home, args.repo.resolve(), args.harden, enable_spark=args.enable_spark
+            home,
+            args.repo.resolve(),
+            args.harden,
+            enable_spark=args.enable_spark,
+            enable_task_created=args.enable_task_created,
+            enable_task_completed=args.enable_task_completed,
         ):
             print(f"WARNING: {warning}")
     else:
-        remove_harness_config(home)
+        remove_harness_config(home, args.state_file)
     return 0
 
 

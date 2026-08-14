@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from scripts.live_graph.store import StateStore
 
@@ -105,6 +106,193 @@ class StateStoreTests(unittest.TestCase):
                 blocked_store.load("session-1")
         self.assertFalse((run_dir / "snapshot.json").exists())
 
+    def test_load_replays_durable_event_when_snapshot_write_failed(self) -> None:
+        self.start()
+        with mock.patch.object(self.store, "_write_snapshot", side_effect=OSError("snapshot failed")):
+            with self.assertRaisesRegex(OSError, "snapshot failed"):
+                self.store.append(
+                    "session-1",
+                    "node.started",
+                    "task:durable",
+                    {"kind": "task", "label": "Durable event"},
+                )
+
+        run_dir = self.root / "session-1"
+        self.assertEqual(len((run_dir / "events.jsonl").read_text().splitlines()), 2)
+        recovered = StateStore(self.root).load("session-1")
+        self.assertEqual(recovered["sequence"], 2)
+        self.assertIn("task:durable", recovered["nodes"])
+
+        third = StateStore(self.root).append(
+            "session-1", "checkpoint", "session:session-1", {"label": "after recovery"}
+        )
+        self.assertEqual(third["sequence"], 3)
+        self.assertEqual(
+            [json.loads(line)["sequence"] for line in (run_dir / "events.jsonl").read_text().splitlines()],
+            [1, 2, 3],
+        )
+
+    def test_semantically_corrupt_snapshot_recovers_or_isolated_from_other_runs(self) -> None:
+        self.start("healthy")
+        self.start("recoverable")
+        recoverable_path = self.root / "recoverable" / "snapshot.json"
+        recoverable_path.write_text(
+            json.dumps({"schema_version": 1, "session_id": "recoverable", "sequence": "oops"}),
+            encoding="utf-8",
+        )
+        recovered = self.store.load("recoverable")
+        self.assertEqual(recovered["sequence"], 1)
+        self.assertEqual(recovered["session_id"], "recoverable")
+
+        corrupt_dir = self.root / "corrupt"
+        corrupt_dir.mkdir(mode=0o700)
+        (corrupt_dir / "snapshot.json").write_text(
+            json.dumps({"schema_version": 1, "session_id": "corrupt", "sequence": "oops"}),
+            encoding="utf-8",
+        )
+        snapshots = self.store.snapshots()
+        self.assertEqual({item["session_id"] for item in snapshots}, {"healthy", "recoverable"})
+        self.assertTrue((corrupt_dir / "snapshot.json").exists())
+
+    def test_legacy_schema_one_snapshot_without_node_created_at_remains_readable(self) -> None:
+        self.start("legacy")
+        snapshot_path = self.root / "legacy" / "snapshot.json"
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        for node in snapshot["nodes"].values():
+            node.pop("created_at", None)
+        for key in ("_event_log_size", "_event_log_mtime_ns", "_event_log_sequence"):
+            snapshot.pop(key, None)
+        snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+        original = snapshot_path.read_bytes()
+
+        loaded = StateStore(self.root).load("legacy")
+
+        self.assertEqual(loaded["session_id"], "legacy")
+        self.assertEqual(snapshot_path.read_bytes(), original)
+
+    def test_unchanged_cached_snapshot_does_not_replay_event_log(self) -> None:
+        self.start()
+        with mock.patch.object(self.store, "_recover", side_effect=AssertionError("unexpected replay")) as recover:
+            loaded = self.store.load("session-1")
+        self.assertEqual(loaded["sequence"], 1)
+        recover.assert_not_called()
+
+    def test_truncated_event_log_preserves_newer_snapshot_and_blocks_append(self) -> None:
+        self.start()
+        self.store.append(
+            "session-1", "task.created", "task:newer", {"kind": "task", "label": "Newer"}
+        )
+        run_dir = self.root / "session-1"
+        snapshot_before = (run_dir / "snapshot.json").read_bytes()
+        first_line = (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        (run_dir / "events.jsonl").write_text(first_line + "\n", encoding="utf-8")
+
+        loaded = StateStore(self.root).load("session-1")
+
+        self.assertEqual(loaded["sequence"], 2)
+        self.assertIn("task:newer", loaded["nodes"])
+        self.assertTrue(loaded["degraded"])
+        self.assertEqual((run_dir / "snapshot.json").read_bytes(), snapshot_before)
+        with self.assertRaisesRegex(ValueError, "truncated"):
+            StateStore(self.root).append(
+                "session-1", "checkpoint", "session:session-1", {"label": "must stop"}
+            )
+
+    def test_append_after_partial_final_line_remains_recoverable(self) -> None:
+        self.start()
+        run_dir = self.root / "session-1"
+        with (run_dir / "events.jsonl").open("ab") as stream:
+            stream.write(b'{"partial":')
+            stream.flush()
+            os.fsync(stream.fileno())
+
+        appended = StateStore(self.root).append(
+            "session-1", "checkpoint", "session:session-1", {"label": "after crash"}
+        )
+        self.assertEqual(appended["sequence"], 2)
+        self.assertTrue(StateStore(self.root).load("session-1")["degraded"])
+        log_text = (run_dir / "events.jsonl").read_text(encoding="utf-8")
+        self.assertIn('{"partial":\n{"event_id"', log_text)
+
+        (run_dir / "snapshot.json").unlink()
+        recovered = StateStore(self.root).load("session-1")
+        self.assertEqual(recovered["sequence"], 2)
+        self.assertEqual([item["label"] for item in recovered["checkpoints"]], ["after crash"])
+        self.assertTrue(recovered["degraded"])
+
+    def test_append_after_partial_utf8_final_line_remains_recoverable(self) -> None:
+        self.start()
+        run_dir = self.root / "session-1"
+        with (run_dir / "events.jsonl").open("ab") as stream:
+            stream.write(b'{"partial":"\xea')
+            stream.flush()
+            os.fsync(stream.fileno())
+
+        appended = StateStore(self.root).append(
+            "session-1", "checkpoint", "session:session-1", {"label": "after utf8 crash"}
+        )
+        self.assertEqual(appended["sequence"], 2)
+        self.assertTrue(StateStore(self.root).load("session-1")["degraded"])
+
+        (run_dir / "snapshot.json").unlink()
+        recovered = StateStore(self.root).load("session-1")
+        self.assertEqual(recovered["sequence"], 2)
+        self.assertEqual(
+            [item["label"] for item in recovered["checkpoints"]], ["after utf8 crash"]
+        )
+        self.assertTrue(recovered["degraded"])
+
+    def test_missing_marked_event_log_preserves_snapshot_and_blocks_append(self) -> None:
+        self.start()
+        self.store.append(
+            "session-1", "task.created", "task:newer", {"kind": "task", "label": "Newer"}
+        )
+        run_dir = self.root / "session-1"
+        snapshot_before = (run_dir / "snapshot.json").read_bytes()
+        (run_dir / "events.jsonl").unlink()
+
+        loaded = StateStore(self.root).load("session-1")
+
+        self.assertEqual(loaded["sequence"], 2)
+        self.assertIn("task:newer", loaded["nodes"])
+        self.assertTrue(loaded["degraded"])
+        self.assertEqual((run_dir / "snapshot.json").read_bytes(), snapshot_before)
+        with self.assertRaisesRegex(ValueError, "missing or truncated"):
+            StateStore(self.root).append(
+                "session-1", "checkpoint", "session:session-1", {"label": "must stop"}
+            )
+
+    def test_semantically_invalid_high_sequence_event_keeps_later_log_monotonic(self) -> None:
+        self.start()
+        run_dir = self.root / "session-1"
+        invalid = {
+            "schema_version": 1,
+            "event_id": "invalid-high",
+            "session_id": "session-1",
+            "sequence": 100,
+            "timestamp": "2026-08-14T00:00:00Z",
+            "event_type": "node.started",
+            "source": "test",
+            "node_id": "task:invalid",
+            "payload": {"kind": "not-a-node-kind"},
+        }
+        with (run_dir / "events.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(invalid) + "\n")
+
+        appended = StateStore(self.root).append(
+            "session-1", "checkpoint", "session:session-1", {"label": "valid next"}
+        )
+        self.assertEqual(appended["sequence"], 101)
+        self.assertEqual(
+            [json.loads(line)["sequence"] for line in (run_dir / "events.jsonl").read_text().splitlines()],
+            [1, 100, 101],
+        )
+        recovered = StateStore(self.root).load("session-1")
+        self.assertEqual(recovered["sequence"], 101)
+        self.assertTrue(recovered["degraded"])
+        with mock.patch.object(StateStore, "_recover", side_effect=AssertionError("unexpected replay")):
+            self.assertEqual(StateStore(self.root).load("session-1")["sequence"], 101)
+
     def test_latest_selects_newest_matching_canonical_project(self) -> None:
         other = Path(self.temporary.name) / "other"
         other.mkdir()
@@ -117,6 +305,54 @@ class StateStoreTests(unittest.TestCase):
         self.assertEqual(self.store.latest()["session_id"], "newer")
         self.assertEqual(self.store.latest(self.project)["session_id"], "newer")
         self.assertIsNone(self.store.latest(Path(self.temporary.name) / "missing"))
+
+    def test_snapshots_are_deterministic_and_path_filtered(self) -> None:
+        other = Path(self.temporary.name) / "other"
+        other.mkdir()
+        self.start("terminal-old", self.project)
+        self.store.append("terminal-old", "session.ended", "session:terminal-old", {"state": "passed"})
+        self.start("running-old", self.project)
+        self.start("terminal-new", other)
+        self.store.append("terminal-new", "session.ended", "session:terminal-new", {"state": "passed"})
+        self.start("running-new", self.project / ".")
+
+        timestamps = {
+            "terminal-old": "2026-08-10T00:00:00Z",
+            "running-old": "2026-08-11T00:00:00Z",
+            "terminal-new": "2026-08-13T00:00:00Z",
+            "running-new": "2026-08-12T00:00:00Z",
+        }
+        for session_id, timestamp in timestamps.items():
+            snapshot_path = self.root / session_id / "snapshot.json"
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            snapshot["updated_at"] = timestamp
+            snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+        (self.root / "not a session").mkdir()
+
+        self.assertEqual(
+            [snapshot["session_id"] for snapshot in self.store.snapshots()],
+            ["running-new", "running-old", "terminal-new", "terminal-old"],
+        )
+        self.assertEqual(
+            [snapshot["session_id"] for snapshot in self.store.snapshots(self.project / ".." / "project")],
+            ["running-new", "running-old", "terminal-old"],
+        )
+        self.assertEqual(self.store.latest()["session_id"], "running-new")
+
+    def test_snapshots_preserve_latest_tie_breaker_by_session_id(self) -> None:
+        self.start("running-a")
+        self.start("running-z")
+        for session_id in ("running-a", "running-z"):
+            snapshot_path = self.root / session_id / "snapshot.json"
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            snapshot["updated_at"] = "2026-08-14T00:00:00Z"
+            snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+        self.assertEqual(
+            [snapshot["session_id"] for snapshot in self.store.snapshots()],
+            ["running-z", "running-a"],
+        )
+        self.assertEqual(self.store.latest()["session_id"], "running-z")
 
     def test_cleanup_removes_only_runs_older_than_boundary(self) -> None:
         self.start("old")
@@ -205,6 +441,108 @@ class StateStoreTests(unittest.TestCase):
             with self.assertRaises(TimeoutError):
                 blocked_store.append("session-1", "checkpoint", "session:session-1", {})
         self.assertEqual((run_dir / "events.jsonl").read_bytes(), before)
+
+    def test_descriptions_are_bounded_and_secrets_are_redacted(self) -> None:
+        long_description = "x" * 200
+        event = self.store.append(
+            "session-1", "task.created", "task:description",
+            {"label": "Description", "description": long_description},
+        )
+        redacted = self.store.append(
+            "session-1", "node.updated", "task:description",
+            {"description": "Bearer " + "abcdefghijklmnopqrstuvwxyz012345"},
+        )
+
+        self.assertEqual(event["payload"]["description"], "x" * 160)
+        self.assertEqual(redacted["payload"]["description"], "[REDACTED]")
+        persisted = (self.root / "session-1" / "events.jsonl").read_text(encoding="utf-8")
+        self.assertIn('"description":"[REDACTED]"', persisted)
+
+    def test_non_string_text_fields_are_rejected_before_persistence(self) -> None:
+        self.start()
+        events_path = self.root / "session-1" / "events.jsonl"
+        before = events_path.read_bytes()
+
+        for key in ("label", "title", "session_title", "description"):
+            for value in ({"nested": "value"}, ["nested", "value"]):
+                with self.subTest(key=key, value=value):
+                    with self.assertRaisesRegex(ValueError, "^invalid event text field$"):
+                        self.store.append("session-1", "node.updated", "task:one", {key: value})
+
+        self.assertEqual(events_path.read_bytes(), before)
+        private_state = "".join(
+            path.read_text(encoding="utf-8")
+            for path in (self.root / "session-1").iterdir()
+            if path.is_file() and path.name != ".lock"
+        )
+        self.assertNotIn("nested", private_state)
+
+    def test_drops_unknown_and_nested_fields_while_preserving_task_structure(self) -> None:
+        forbidden_values = (
+            "prompt-secret",
+            "code-secret",
+            "command-secret",
+            "tool-output-secret",
+            "response-secret",
+            "/private/transcript-secret.jsonl",
+            "/private/output-secret.txt",
+            "environment-secret",
+            "nested-secret",
+        )
+        event = self.store.append(
+            "session-1",
+            "task.created",
+            "task:build",
+            {
+                "kind": "task",
+                "label": "Build image",
+                "description": "Safe description",
+                "parent_id": "session:session-1",
+                "parent_edge_kind": "contains",
+                "dependencies": ["task:plan"],
+                "prompt": forbidden_values[0],
+                "code": forbidden_values[1],
+                "command": forbidden_values[2],
+                "tool_output": {"value": forbidden_values[3]},
+                "response": forbidden_values[4],
+                "transcript_path": forbidden_values[5],
+                "output_path": forbidden_values[6],
+                "environment": {"TOKEN": forbidden_values[7]},
+                "arbitrary": {"nested": forbidden_values[8]},
+            },
+        )
+
+        self.assertEqual(
+            event["payload"],
+            {
+                "kind": "task",
+                "label": "Build image",
+                "description": "Safe description",
+                "parent_id": "session:session-1",
+                "parent_edge_kind": "contains",
+                "dependencies": ["task:plan"],
+            },
+        )
+        snapshot = self.store.load("session-1")
+        self.assertEqual(snapshot["nodes"]["task:build"]["description"], "Safe description")
+        self.assertIn("task:build|depends_on|task:plan", snapshot["edges"])
+        persisted = b"\n".join(path.read_bytes() for path in self.root.rglob("*") if path.is_file())
+        for value in forbidden_values:
+            with self.subTest(value=value):
+                self.assertNotIn(value.encode(), persisted)
+
+    def test_non_string_node_metadata_is_rejected_before_persistence(self) -> None:
+        self.start()
+        events_path = self.root / "session-1" / "events.jsonl"
+        before = events_path.read_bytes()
+
+        for key in ("role", "model", "effort"):
+            for value in ({"private": "nested-secret"}, ["nested-secret"]):
+                with self.subTest(key=key, value=value):
+                    with self.assertRaisesRegex(ValueError, "^invalid event metadata field$"):
+                        self.store.append("session-1", "node.updated", "task:one", {key: value})
+
+        self.assertEqual(events_path.read_bytes(), before)
 
     def test_clear_all_removes_runs_but_keeps_private_root(self) -> None:
         self.start("one")

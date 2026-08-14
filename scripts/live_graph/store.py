@@ -14,7 +14,123 @@ import time
 from typing import Any
 from uuid import uuid4
 
-from .model import SCHEMA_VERSION, new_snapshot, reduce_event, sanitize_label, validate_identifier
+from .model import (
+    EDGE_KINDS,
+    NODE_KINDS,
+    NODE_STATES,
+    SCHEMA_VERSION,
+    new_snapshot,
+    reduce_event,
+    sanitize_label,
+    validate_identifier,
+)
+
+
+_TEXT_FIELDS = frozenset({"label", "title", "session_title", "description"})
+_NODE_METADATA_FIELDS = frozenset(
+    {"label", "title", "description", "superseded_by", "role", "model", "effort"}
+)
+_NODE_STRUCTURE_FIELDS = frozenset(
+    {"kind", "state", "parent_id", "parent_edge_kind", "dependencies"}
+)
+_PAYLOAD_FIELDS: dict[str, frozenset[str]] = {
+    "session.started": frozenset({"cwd", "title", "session_title"}),
+    "session.ended": frozenset({"state"}),
+    "node.created": _NODE_METADATA_FIELDS | _NODE_STRUCTURE_FIELDS,
+    "task.created": _NODE_METADATA_FIELDS | _NODE_STRUCTURE_FIELDS | frozenset({"supersedes"}),
+    "node.started": _NODE_METADATA_FIELDS | _NODE_STRUCTURE_FIELDS,
+    "node.finished": _NODE_METADATA_FIELDS | _NODE_STRUCTURE_FIELDS,
+    "task.updated": _NODE_METADATA_FIELDS | _NODE_STRUCTURE_FIELDS | frozenset({"supersedes"}),
+    "node.updated": _NODE_METADATA_FIELDS,
+    "edge.created": frozenset({"target", "kind"}),
+    "checkpoint": frozenset({"label"}),
+}
+_SNAPSHOT_FIELDS = frozenset(
+    {
+        "schema_version", "session_id", "cwd", "title", "created_at", "updated_at",
+        "sequence", "status", "degraded", "root_node_id", "nodes", "edges", "checkpoints",
+        "_event_log_size", "_event_log_mtime_ns", "_event_log_sequence",
+    }
+)
+_NODE_FIELDS = frozenset(
+    {
+        "id", "kind", "label", "description", "state", "sequence", "created_at",
+        "started_at", "finished_at", "degraded", "role", "model", "effort", "superseded_by",
+    }
+)
+_EDGE_FIELDS = frozenset({"id", "source", "target", "kind"})
+_CHECKPOINT_FIELDS = frozenset({"sequence", "timestamp", "label"})
+
+
+def _is_int(value: object, *, minimum: int = 0) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+
+
+def _valid_snapshot(snapshot: object, session_id: str) -> bool:
+    """Validate the persisted presentation schema before returning cached data."""
+    if not isinstance(snapshot, dict) or not set(snapshot).issubset(_SNAPSHOT_FIELDS):
+        return False
+    if snapshot.get("schema_version") != SCHEMA_VERSION or snapshot.get("session_id") != session_id:
+        return False
+    if not all(isinstance(snapshot.get(key), str) for key in ("cwd", "created_at", "updated_at")):
+        return False
+    if "title" in snapshot and not isinstance(snapshot["title"], str):
+        return False
+    if not _is_int(snapshot.get("sequence")) or snapshot.get("status") not in NODE_STATES:
+        return False
+    for key in ("_event_log_size", "_event_log_mtime_ns", "_event_log_sequence"):
+        if key in snapshot and not _is_int(snapshot[key]):
+            return False
+    if not isinstance(snapshot.get("degraded"), bool):
+        return False
+    try:
+        root_node_id = validate_identifier(snapshot.get("root_node_id"), name="root node identifier")
+    except ValueError:
+        return False
+    nodes = snapshot.get("nodes")
+    edges = snapshot.get("edges")
+    checkpoints = snapshot.get("checkpoints")
+    if not isinstance(nodes, dict) or root_node_id not in nodes or not isinstance(edges, dict) or not isinstance(checkpoints, list):
+        return False
+    for node_id, node in nodes.items():
+        try:
+            safe_node_id = validate_identifier(node_id, name="node identifier")
+        except ValueError:
+            return False
+        if not isinstance(node, dict) or not set(node).issubset(_NODE_FIELDS):
+            return False
+        if node.get("id") != safe_node_id or node.get("kind") not in NODE_KINDS or node.get("state") not in NODE_STATES:
+            return False
+        if not isinstance(node.get("label"), str) or not _is_int(node.get("sequence")):
+            return False
+        for key in ("description", "created_at", "started_at", "finished_at", "role", "model", "effort"):
+            if key in node and not isinstance(node[key], str):
+                return False
+        if "degraded" in node and not isinstance(node["degraded"], bool):
+            return False
+        if "superseded_by" in node:
+            try:
+                validate_identifier(node["superseded_by"], name="superseding node identifier")
+            except ValueError:
+                return False
+    for edge_id, edge in edges.items():
+        if not isinstance(edge_id, str) or not isinstance(edge, dict) or set(edge) != _EDGE_FIELDS:
+            return False
+        if edge.get("id") != edge_id or edge.get("kind") not in EDGE_KINDS:
+            return False
+        try:
+            validate_identifier(edge.get("source"), name="edge source")
+            validate_identifier(edge.get("target"), name="edge target")
+        except ValueError:
+            return False
+    for checkpoint in checkpoints:
+        if not isinstance(checkpoint, dict) or set(checkpoint) != _CHECKPOINT_FIELDS:
+            return False
+        if not _is_int(checkpoint.get("sequence"), minimum=1):
+            return False
+        if not isinstance(checkpoint.get("timestamp"), str) or not isinstance(checkpoint.get("label"), str):
+            return False
+    return True
 
 
 def _utc_now() -> str:
@@ -27,6 +143,35 @@ def _canonical_cwd(value: object) -> str:
     if not isinstance(value, (str, os.PathLike)) or not str(value):
         return ""
     return str(Path(value).expanduser().resolve(strict=False))
+
+
+def _safe_payload(event_type: str, payload: dict[str, object]) -> dict[str, object]:
+    """Copy only reducer-supported, scalar lifecycle fields into private state."""
+    for key in _TEXT_FIELDS:
+        if key in payload and not isinstance(payload[key], str):
+            raise ValueError("invalid event text field")
+    for key in ("role", "model", "effort"):
+        if key in payload and not isinstance(payload[key], str):
+            raise ValueError("invalid event metadata field")
+
+    allowed = _PAYLOAD_FIELDS.get(event_type, frozenset())
+    safe_payload = {key: payload[key] for key in allowed if key in payload}
+    for key in ("kind", "state", "parent_id", "parent_edge_kind", "target", "superseded_by", "supersedes"):
+        if key in safe_payload and not isinstance(safe_payload[key], str):
+            raise ValueError("invalid event structural field")
+    if "dependencies" in safe_payload:
+        dependencies = safe_payload["dependencies"]
+        if not isinstance(dependencies, list) or not all(isinstance(item, str) for item in dependencies):
+            raise ValueError("invalid event structural field")
+
+    for key in ("label", "title", "session_title", "role", "model", "effort"):
+        if key in safe_payload:
+            safe_payload[key] = sanitize_label(safe_payload[key])
+    if "description" in safe_payload:
+        safe_payload["description"] = sanitize_label(safe_payload["description"], limit=160)
+    if event_type == "session.started":
+        safe_payload["cwd"] = _canonical_cwd(safe_payload.get("cwd"))
+    return safe_payload
 
 
 class StateStore:
@@ -129,6 +274,18 @@ class StateStore:
                 os.fsync(stream.fileno())
             os.replace(temporary, destination)
             os.chmod(destination, 0o600)
+            directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            directory_fd = os.open(run_dir, directory_flags)
+            try:
+                os.fsync(directory_fd)
+            except OSError as error:
+                unsupported = {errno.EBADF, errno.EINVAL}
+                if hasattr(errno, "ENOTSUP"):
+                    unsupported.add(errno.ENOTSUP)
+                if error.errno not in unsupported:
+                    raise
+            finally:
+                os.close(directory_fd)
         finally:
             try:
                 temporary.unlink()
@@ -143,25 +300,79 @@ class StateStore:
             return None
         return value if isinstance(value, dict) else None
 
+    def _event_log_stat(self, run_dir: Path) -> os.stat_result | None:
+        events_path = run_dir / "events.jsonl"
+        self._reject_symlink(events_path)
+        try:
+            return events_path.stat()
+        except (FileNotFoundError, OSError):
+            return None
+
+    @staticmethod
+    def _mark_event_log(snapshot: dict[str, object], event_stat: os.stat_result | None, sequence: int) -> None:
+        if event_stat is None:
+            snapshot.pop("_event_log_size", None)
+            snapshot.pop("_event_log_mtime_ns", None)
+            snapshot.pop("_event_log_sequence", None)
+            return
+        snapshot["_event_log_size"] = event_stat.st_size
+        snapshot["_event_log_mtime_ns"] = event_stat.st_mtime_ns
+        snapshot["_event_log_sequence"] = sequence
+
+    def _cached_is_current(
+        self, snapshot: dict[str, object] | None, run_dir: Path, session_id: str
+    ) -> bool:
+        if not _valid_snapshot(snapshot, session_id):
+            return False
+        marker_size = snapshot.get("_event_log_size")
+        marker_mtime = snapshot.get("_event_log_mtime_ns")
+        event_stat = self._event_log_stat(run_dir)
+        if event_stat is None:
+            if isinstance(marker_size, int):
+                snapshot["degraded"] = True
+            return True
+        if marker_size is not None or marker_mtime is not None:
+            if isinstance(marker_size, int) and event_stat.st_size < marker_size:
+                snapshot["degraded"] = True
+                return True
+            return marker_size == event_stat.st_size and marker_mtime == event_stat.st_mtime_ns
+
+        # Schema-v1 snapshots created before the durable marker are current when
+        # their atomic snapshot write followed the last append. This preserves
+        # legacy snapshots without replaying or rewriting them on ordinary reads.
+        snapshot_path = run_dir / "snapshot.json"
+        try:
+            return snapshot_path.stat().st_mtime_ns >= event_stat.st_mtime_ns
+        except OSError:
+            return False
+
     def _recover(self, run_dir: Path, session_id: str) -> dict[str, object] | None:
         events_path = run_dir / "events.jsonl"
         self._reject_symlink(events_path)
         try:
-            lines = events_path.read_text(encoding="utf-8").splitlines()
-        except FileNotFoundError:
+            lines = events_path.read_bytes().splitlines()
+        except (FileNotFoundError, OSError):
             return None
         valid_events: list[dict[str, object]] = []
         degraded = False
+        durable_sequence = 0
         for index, line in enumerate(lines):
             try:
-                value = json.loads(line)
+                value = json.loads(line.decode("utf-8"))
                 if not isinstance(value, dict):
                     raise ValueError
-            except (json.JSONDecodeError, ValueError):
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
                 if index != len(lines) - 1:
                     degraded = True
                 continue
             valid_events.append(value)
+            sequence = value.get("sequence")
+            if (
+                value.get("schema_version") == SCHEMA_VERSION
+                and value.get("session_id") == session_id
+                and _is_int(sequence, minimum=1)
+            ):
+                durable_sequence = max(durable_sequence, sequence)
         if not valid_events:
             return None
         cwd = ""
@@ -182,17 +393,14 @@ class StateStore:
                 degraded = True
         if degraded:
             snapshot["degraded"] = True
+        self._mark_event_log(snapshot, self._event_log_stat(run_dir), durable_sequence)
         return snapshot
 
     def _load_unlocked(self, run_dir: Path, session_id: str) -> dict[str, object] | None:
         snapshot_path = run_dir / "snapshot.json"
         self._reject_symlink(snapshot_path)
         snapshot = self._read_json(snapshot_path)
-        if (
-            snapshot is not None
-            and snapshot.get("schema_version") == SCHEMA_VERSION
-            and snapshot.get("session_id") == session_id
-        ):
+        if self._cached_is_current(snapshot, run_dir, session_id):
             return snapshot
         return self._recover(run_dir, session_id)
 
@@ -212,12 +420,7 @@ class StateStore:
             payload = {}
         if not isinstance(payload, dict):
             raise ValueError("event payload must be an object")
-        safe_payload = copy.deepcopy(payload)
-        for key in ("label", "title", "role", "model", "effort"):
-            if key in safe_payload:
-                safe_payload[key] = sanitize_label(safe_payload[key])
-        if event_type == "session.started":
-            safe_payload["cwd"] = _canonical_cwd(safe_payload.get("cwd"))
+        safe_payload = _safe_payload(event_type, payload)
         run_dir = self._run_dir(session_id, create=True)
         lock_stream = self._lock(run_dir)
         try:
@@ -225,7 +428,14 @@ class StateStore:
             timestamp = _utc_now()
             if snapshot is None:
                 snapshot = new_snapshot(session_id, str(safe_payload.get("cwd", "")), timestamp)
-            sequence = int(snapshot.get("sequence", 0)) + 1
+            event_stat = self._event_log_stat(run_dir)
+            marker_size = snapshot.get("_event_log_size")
+            if isinstance(marker_size, int) and (
+                event_stat is None or event_stat.st_size < marker_size
+            ):
+                raise ValueError("event log is missing or truncated; refusing to append")
+            durable_sequence = int(snapshot.get("_event_log_sequence", snapshot.get("sequence", 0)))
+            sequence = max(int(snapshot.get("sequence", 0)), durable_sequence) + 1
             event: dict[str, object] = {
                 "schema_version": SCHEMA_VERSION,
                 "event_id": str(uuid4()),
@@ -241,9 +451,19 @@ class StateStore:
             events_path = run_dir / "events.jsonl"
             descriptor = self._open_private(events_path, os.O_CREAT | os.O_APPEND | os.O_WRONLY)
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                separated_partial = False
+                if event_stat is not None and event_stat.st_size > 0:
+                    with events_path.open("rb") as existing:
+                        existing.seek(-1, os.SEEK_END)
+                        if existing.read(1) != b"\n":
+                            stream.write("\n")
+                            separated_partial = True
                 stream.write(json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
                 stream.flush()
                 os.fsync(stream.fileno())
+            if separated_partial:
+                next_snapshot["degraded"] = True
+            self._mark_event_log(next_snapshot, self._event_log_stat(run_dir), sequence)
             self._write_snapshot(run_dir, next_snapshot)
             return event
         finally:
@@ -259,30 +479,23 @@ class StateStore:
         snapshot_path = run_dir / "snapshot.json"
         self._reject_symlink(snapshot_path)
         cached = self._read_json(snapshot_path)
-        if (
-            cached is not None
-            and cached.get("schema_version") == SCHEMA_VERSION
-            and cached.get("session_id") == session_id
-        ):
+        if self._cached_is_current(cached, run_dir, session_id):
             return cached
         lock_stream = self._lock(run_dir)
         try:
             cached = self._read_json(snapshot_path)
-            if (
-                cached is not None
-                and cached.get("schema_version") == SCHEMA_VERSION
-                and cached.get("session_id") == session_id
-            ):
+            if self._cached_is_current(cached, run_dir, session_id):
                 return cached
             snapshot = self._recover(run_dir, session_id)
-            if snapshot is not None:
+            if snapshot is not None and _valid_snapshot(snapshot, session_id):
                 self._write_snapshot(run_dir, snapshot)
-            return snapshot
+                return snapshot
+            return None
         finally:
             fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
             lock_stream.close()
 
-    def latest(self, cwd: Path | str | None = None) -> dict[str, object] | None:
+    def _snapshots_unordered(self, cwd: Path | str | None = None) -> list[dict[str, object]]:
         self._ensure_root()
         wanted_cwd = _canonical_cwd(cwd) if cwd is not None else None
         snapshots: list[dict[str, object]] = []
@@ -300,11 +513,19 @@ class StateStore:
             if wanted_cwd is not None and _canonical_cwd(snapshot.get("cwd")) != wanted_cwd:
                 continue
             snapshots.append(snapshot)
-        if not snapshots:
-            return None
-        active = [snapshot for snapshot in snapshots if snapshot.get("status") == "running"]
-        candidates = active or snapshots
-        return max(candidates, key=lambda snapshot: (str(snapshot.get("updated_at", "")), str(snapshot.get("session_id", ""))))
+        return snapshots
+
+    def snapshots(self, cwd: Path | str | None = None) -> list[dict[str, object]]:
+        """Return current session snapshots in stable running-first order."""
+        snapshots = self._snapshots_unordered(cwd)
+        snapshots.sort(key=lambda snapshot: str(snapshot.get("session_id", "")), reverse=True)
+        snapshots.sort(key=lambda snapshot: str(snapshot.get("updated_at", "")), reverse=True)
+        snapshots.sort(key=lambda snapshot: snapshot.get("status") != "running")
+        return snapshots
+
+    def latest(self, cwd: Path | str | None = None) -> dict[str, object] | None:
+        snapshots = self.snapshots(cwd)
+        return snapshots[0] if snapshots else None
 
     def _remove_run(self, candidate: Path) -> str:
         self._reject_symlink(candidate)

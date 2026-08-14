@@ -57,20 +57,31 @@ Fable 5는 계속 계획의 소유자입니다. 다음 조건 중 하나라도 �
 
 설치 뒤 새 Claude Code 세션부터 작업 생명주기(lifecycle, 작업이 생성·시작·종료되는 흐름)가 자동으로 기록됩니다. 기존 상단 상태줄, 서브에이전트 행, `/agents`, `/tasks`는 바꾸지 않으며 새 창이나 브라우저도 자동으로 열지 않습니다.
 
-두 번째 터미널에서 계속 갱신되는 그래프를 엽니다.
+기록된 세션을 먼저 보고, 두 번째 터미널에서 계속 갱신되는 그래프를 엽니다.
 
 ```bash
+claudex5 sessions
 claudex5 dashboard
 ```
 
-현재 상태를 한 번만 출력하거나 로컬 웹 그래프를 열 수도 있습니다.
+`dashboard`는 먼저 현재 프로젝트 경로에서 실행 중인 세션 하나를 찾습니다. 실행 중인 세션이 없으면 그 경로에 남아 있는 세션 하나를 사용합니다. 대화형 터미널에서 그 밖에 여러 후보가 있으면 선택 화면을 열고, `--select`는 항상 선택 화면을 엽니다. 비대화형 명령( `--once` 포함)에서는 프롬프트를 띄우지 않고 모호성 오류로 끝나므로 `--session-id` 또는 `--all`로 대상을 명시해야 합니다.
+
+```bash
+claudex5 dashboard --select
+claudex5 dashboard --session-id session-123
+claudex5 dashboard --all
+```
+
+선택한 현재 상태를 한 번만 출력하거나 로컬 웹 그래프를 열 수도 있습니다.
 
 ```bash
 claudex5 dashboard --once
 claudex5 dashboard --web
 ```
 
-그래프에는 태스크·에이전트·리뷰·판정·품질 검증 노드, 의존성과 부모-자식 엣지, 현재 상태, 알려진 역할·모델·추론 수준이 표시됩니다. 자동 Codex 역할은 `claudex5 codex-run`, 프로젝트 품질 검증은 `claudex5 gate-run`을 사용하므로 실제 프로세스 성공·실패·중단 상태도 같은 그래프에 나타납니다. 수동 `/codex:*` 명령은 계속 쓸 수 있지만, 플러그인이 생명주기 정보를 제공할 때만 그래프에 나타나는 최선 노력 방식입니다.
+`--all`은 웹 화면을 프로젝트 경로별로 묶습니다. 실행 중인 세션은 계속 보이고, 각 프로젝트의 가장 최근 완료 세션 하나는 기본으로 접힌 “Completed sessions” 영역에 표시됩니다. 카드를 선택하면 해당 세션의 그래프와 안전한 태스크 상세를 볼 수 있습니다. 그래프에는 태스크·에이전트·리뷰·판정·품질 검증 노드, 의존성과 부모-자식 엣지, 현재 상태, 알려진 역할·모델·추론 수준이 표시됩니다. 태스크 제목(subject)과 안전한 설명(description)은 구분해 표시하며 설명은 최대 160자로 제한됩니다. 경과 시간은 생명주기 시각을 사용하고, 시각이 없거나 신뢰할 수 없으면 시간을 알 수 없다고 표시합니다. 자동 Codex 역할은 `claudex5 codex-run`, 프로젝트 품질 검증은 `claudex5 gate-run`을 사용하므로 실제 프로세스 성공·실패·중단 상태도 같은 그래프에 나타납니다. 수동 `/codex:*` 명령은 계속 쓸 수 있지만, 플러그인이 생명주기 정보를 제공할 때만 그래프에 나타나는 최선 노력 방식입니다.
+
+브라우저는 현재 선택 범위마다 SSE(Server-Sent Events, 서버가 브라우저에 상태를 계속 보내는 연결) 스트림 하나만 유지합니다. 서버는 처음 상태 하나를 보낸 뒤 바뀐 버전만 보내고, 연결 유지용 keepalive 메시지도 보냅니다. SSE가 끊기거나 사용할 수 없으면 브라우저가 스트림 재연결을 시도하면서 5초마다 스냅샷 폴링으로 갱신합니다. 선택을 바꾼 뒤 늦게 도착한 이전 응답은 화면에 적용하지 않습니다.
 
 웹 서버는 기본적으로 `127.0.0.1:8765`에만 열립니다. 원격 컴퓨터나 서버에서는 웹 서버를 공개 주소에 바인딩하지 말고, 로컬 컴퓨터에서 SSH (Secure Shell, 원격 서버에 안전하게 연결하는 방식) 터널을 엽니다.
 
@@ -78,7 +89,7 @@ claudex5 dashboard --web
 ssh -L 8765:127.0.0.1:8765 user@example-server
 ```
 
-그다음 로컬 브라우저에서 `http://127.0.0.1:8765/`을 엽니다. 외부 자산과 분석 스크립트는 없으며 프롬프트, 코드, 명령, 도구 출력, 답변, transcript 경로, 환경 변수, 인증정보와 모델 목록은 수집하지 않습니다. 정제된 상태만 `${XDG_STATE_HOME:-~/.local/state}/claudex5-engineering-harness/runs` 아래에 디렉터리 `0700`, 파일 `0600` 권한으로 해당 머신에 저장됩니다.
+그다음 로컬 브라우저에서 `http://127.0.0.1:8765/`을 엽니다. 외부 자산과 분석 스크립트는 없습니다. 기록기는 논리 식별자, 상태, 의존성, 알려진 역할·모델·추론 수준, 태스크 제목, 최대 160자의 설명처럼 허용 목록에 있는 정제된 생명주기 정보만 저장합니다. 필드 단위 허용 목록은 원본 또는 전용 `prompt`, 응답 내용, `outputFile`, 사용량 원격 측정(usage telemetry), transcript 경로, 코드, 명령, 도구 출력, 환경, 인증, 모델 목록 필드를 수집하지 않습니다. 다만 제목과 설명은 사용자나 도구가 준 자유 텍스트이므로 비밀, 민감한 코드 또는 명령을 넣지 않아야 합니다. 알려진 비밀 형식은 최선 노력으로 가리지만, 완전한 데이터 유출 방지(Data Loss Prevention, 민감 데이터가 저장·전송되는 것을 모두 차단하는 기능)를 보장하지는 않습니다. 정제된 상태만 `${XDG_STATE_HOME:-~/.local/state}/claudex5-engineering-harness/runs` 아래에 디렉터리 `0700`, 파일 `0600` 권한으로 해당 머신에 저장됩니다.
 
 ```bash
 claudex5 status --json
@@ -86,7 +97,7 @@ claudex5 clean --days 7
 claudex5 clean --all
 ```
 
-제거할 때 기록은 기본 보존됩니다. 화면이 비어 있으면 설치 뒤 Claude Code를 새로 시작합니다. 포트가 사용 중이면 `claudex5 dashboard --web --port 8766`처럼 다른 로컬 포트를 지정합니다.
+제거할 때 기록은 기본 보존됩니다. 의도적으로 지울 때만 제거 전에 `claudex5 clean --all`을 실행합니다. 화면이 비어 있으면 설치 뒤 Claude Code를 새로 시작합니다. 모호한 세션 선택 오류가 나오면 `--session-id` 또는 `--all`을 붙이거나, 대화형 터미널에서만 `--select`를 사용합니다. 포트가 사용 중이면 `claudex5 dashboard --web --port 8766`처럼 다른 로컬 포트를 지정합니다. 웹 화면에 재연결 상태가 보이는 것은 안전합니다. SSE 재연결 중에도 5초 폴링이 화면을 갱신합니다.
 
 ## 설치
 
@@ -261,18 +272,14 @@ claude --agent harness-judge-opus
 
 ```bash
 cd ~/Documents/github/claudex5-engineering-harness
-git pull --ff-only origin main
-./install.sh
-./verify.sh --strict
+git pull --ff-only && ./install.sh && ./verify.sh --strict
 ```
 
 VPS 또는 다른 서버에서는 실제로 복제한 경로로 이동해서 같은 순서로 실행합니다. 예를 들어 홈 디렉터리에 복제했다면:
 
 ```bash
 cd ~/claudex5-engineering-harness
-git pull --ff-only origin main
-./install.sh
-./verify.sh --strict
+git pull --ff-only && ./install.sh && ./verify.sh --strict
 ```
 
 `git pull`은 공개 설정 파일을 업데이트하고, `./install.sh`는 해당 머신의 현재 계정으로 Spark 접근 여부를 다시 확인한 뒤 전역 지침과 역할을 안전하게 병합합니다. 인증은 머신별로 그대로 유지되며 다른 장비로 복사되지 않습니다.

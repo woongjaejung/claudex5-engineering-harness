@@ -17,6 +17,7 @@ bash tests/test_install.sh
 bash tests/test_bootstrap.sh
 bash tests/test_verify.sh
 bash -n install.sh link.sh verify.sh uninstall.sh bootstrap-system.sh scripts/common.sh
+node --check scripts/live_graph/assets/app.mjs
 ./verify.sh --secrets-only
 git diff --check
 ```

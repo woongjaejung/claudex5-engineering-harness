@@ -29,6 +29,16 @@ done
 target_home="$(claudex5_validate_home "$target_home")"
 [[ ! -L "$target_home/.claude" ]] || claudex5_die "refusing symlinked configuration directory: $target_home/.claude"
 [[ ! -L "$target_home/.codex" ]] || claudex5_die "refusing symlinked configuration directory: $target_home/.codex"
+for managed_path in \
+  "$target_home/.local/bin" \
+  "$target_home/.local/state/claudex5-engineering-harness" \
+  "$target_home/.claude/agents" \
+  "$target_home/.claude/hooks" \
+  "$target_home/.claude/skills/claudex5-subagent-routing" \
+  "$target_home/.claude/statuslines" \
+  "$target_home/.codex/agents"; do
+  claudex5_assert_no_symlink_components "$target_home" "$managed_path"
+done
 
 if [[ "$bootstrap" -eq 1 ]]; then
   "$repo_root/bootstrap-system.sh"
@@ -40,6 +50,19 @@ if [[ "$skip_runtime" -eq 0 ]]; then
   claudex5_node_version_ok || claudex5_die "Node.js 18.18 or newer is required; use --bootstrap on a new Debian/Ubuntu system"
   command -v claude >/dev/null 2>&1 || claudex5_die "Claude Code is required; use --bootstrap on a new Debian/Ubuntu system"
   command -v codex >/dev/null 2>&1 || claudex5_die "Codex CLI is required; use --bootstrap on a new Debian/Ubuntu system"
+fi
+
+enable_task_created=0
+enable_task_completed=0
+if claude_version="$(claudex5_claude_version)"; then
+  if claudex5_version_at_least "$claude_version" "2.1.33"; then
+    enable_task_completed=1
+  fi
+  if claudex5_version_at_least "$claude_version" "2.1.84"; then
+    enable_task_created=1
+  fi
+else
+  claudex5_warn "Claude Code version is unavailable or unsupported; installing base lifecycle hooks only"
 fi
 
 enable_spark=0
@@ -72,10 +95,15 @@ cleanup() {
     claudex5_restore_backup "$target_home" "$backup_dir" "$expected_state_file"
     if [[ -f "$created_links_file" ]]; then
       while IFS=$'\t' read -r action link_path link_target; do
+        if ! (claudex5_assert_no_symlink_components "$target_home" "$(dirname "$link_path")"); then
+          claudex5_warn "managed link path changed during rollback; skipped: $link_path"
+          continue
+        fi
         if [[ "$action" == "created" && -L "$link_path" && \
               "$(readlink "$link_path")" == "$link_target" ]]; then
           rm -f "$link_path"
         elif [[ "$action" == "removed" && ! -e "$link_path" && ! -L "$link_path" ]]; then
+          claudex5_assert_no_symlink_components "$target_home" "$(dirname "$link_path")"
           mkdir -p "$(dirname "$link_path")"
           ln -s "$link_target" "$link_path"
         fi
@@ -95,6 +123,8 @@ link_args=(--home "$target_home" --journal "$created_links_file")
 merge_args=(install --home "$target_home" --repo "$repo_root")
 [[ "$harden" -eq 1 ]] && merge_args+=(--harden)
 [[ "$enable_spark" -eq 1 ]] && merge_args+=(--enable-spark)
+[[ "$enable_task_created" -eq 1 ]] && merge_args+=(--enable-task-created)
+[[ "$enable_task_completed" -eq 1 ]] && merge_args+=(--enable-task-completed)
 "$python_bin" "$repo_root/scripts/merge_config.py" "${merge_args[@]}"
 claudex5_capture_config_state "$target_home" "$expected_state_file"
 
@@ -112,7 +142,7 @@ fi
 claudex5_capture_config_state "$target_home" "$expected_state_file"
 
 if [[ -x "$repo_root/verify.sh" ]]; then
-  "$repo_root/verify.sh" --home "$target_home" --repo "$repo_root" --structural-only
+  CLAUDEX5_SUPPRESS_VERSION_WARNING=1 "$repo_root/verify.sh" --home "$target_home" --repo "$repo_root" --structural-only
 fi
 committed=1
 trap - EXIT INT TERM
@@ -120,4 +150,4 @@ rm -f "$created_links_file"
 rm -f "$expected_state_file"
 claudex5_info "installation complete"
 claudex5_info "backup: $backup_dir"
-"$repo_root/verify.sh" --home "$target_home" --repo "$repo_root"
+CLAUDEX5_SUPPRESS_VERSION_WARNING=1 "$repo_root/verify.sh" --home "$target_home" --repo "$repo_root"

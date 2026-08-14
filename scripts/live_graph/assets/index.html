@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claudex5 Live Graph</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.mjs"></script>
+</head>
+<body>
+  <div class="scanlines" aria-hidden="true"></div>
+  <header class="masthead">
+    <div class="identity"><span class="signal-mark" aria-hidden="true"></span><div><p class="eyebrow">CLAUDEX5 / ORBITAL TELEMETRY</p><h1>Session array</h1></div></div>
+    <label class="selector-label">TARGET <select id="session-selector" aria-label="Dashboard session target"><option>All sessions</option></select></label>
+    <div class="connection" id="connection" data-state="connecting" role="status" aria-live="polite"><span class="connection-light" aria-hidden="true"></span><span id="connection-text">LOCAL / CONNECTING</span></div>
+  </header>
+  <main>
+    <p id="selection-error" class="selection-error" role="alert"></p>
+    <section id="all-view" aria-label="All monitored sessions"></section>
+    <section id="focused-view" class="focused-view" hidden aria-label="Focused session graph">
+      <div class="focus-header"><button id="back-button" type="button">← Back to all sessions</button><div><p class="eyebrow">FOCUSED SIGNAL</p><h2 id="focus-title">Session</h2><p id="focus-path" class="path"></p></div></div>
+      <svg id="graph" role="img" aria-label="Task and agent dependency graph"></svg>
+      <aside id="node-detail" class="node-detail" aria-live="off"><p>Select a graph node to inspect its safe task detail.</p></aside>
+    </section>
+    <section class="empty-state hidden" id="empty-state"><div class="radar" aria-hidden="true"><i></i></div><p>Awaiting session telemetry</p><small>Start a Claudex5 run, then keep this display open.</small></section>
+  </main>
+  <footer><span>LOOPBACK ONLY</span><span>ONE AUTHORITATIVE STREAM</span><span id="degraded">SAFE LIFECYCLE DATA</span></footer>
+</body>
+</html>

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -11,6 +12,7 @@ from pathlib import Path
 import scripts.merge_config as merge_config_module
 from scripts.plugin_registry import resolve_codex_helper
 from scripts.merge_config import (
+    BASE_CLAUDEX5_HOOK_GROUPS,
     CLAUDEX5_HOOK_GROUPS,
     END_MARKER,
     START_MARKER,
@@ -57,7 +59,7 @@ class ClaudeSettingsTests(unittest.TestCase):
 
             self.assertEqual(merged["model"], "existing-model")
             self.assertEqual(merged["hooks"]["Stop"][0], {"command": "keep-me"})
-            self.assertIn(CLAUDEX5_HOOK_GROUPS["Stop"], merged["hooks"]["Stop"])
+            self.assertIn(CLAUDEX5_HOOK_GROUPS["Stop"][0], merged["hooks"]["Stop"])
             self.assertEqual(
                 merged["statusLine"], {"type": "command", "command": "keep-status"}
             )
@@ -102,8 +104,9 @@ class ClaudeSettingsTests(unittest.TestCase):
 
             self.assertEqual(merged["hooks"]["SessionStart"][0], foreign_current)
             self.assertEqual(merged["hooks"]["Stop"][0], {"command": "legacy-hook"})
-            for event, owned in CLAUDEX5_HOOK_GROUPS.items():
-                self.assertEqual(merged["hooks"][event].count(owned), 1)
+            for event, owned_groups in BASE_CLAUDEX5_HOOK_GROUPS.items():
+                for owned in owned_groups:
+                    self.assertEqual(merged["hooks"][event].count(owned), 1)
             self.assertEqual(merged["statusLine"]["command"], "keep-status")
             self.assertEqual(merged["subagentStatusLine"]["command"], "keep-subagent")
 
@@ -192,6 +195,44 @@ class ClaudeSettingsTests(unittest.TestCase):
                 if event != "Stop":
                     self.assertNotIn(event, result.get("hooks", {}))
 
+    def test_capability_gated_hooks_normalize_duplicates_and_remove_downgraded_groups(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            foreign = {"matcher": "Bash", "hooks": [{"command": "~/.orca/hook.sh"}]}
+            task_created = {"hooks": [{"type": "command", "command": "~/.claude/hooks/claudex5-live-graph.py", "timeout": 5}]}
+            path.write_text(
+                json.dumps(
+                    {
+                        "hooks": {
+                            "PostToolUse": [foreign],
+                            "TaskCreated": [task_created, task_created],
+                            "TaskCompleted": [task_created],
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            merge_claude_settings(
+                path, enable_plugin=False, enable_task_created=True, enable_task_completed=True
+            )
+            merge_claude_settings(
+                path, enable_plugin=False, enable_task_created=True, enable_task_completed=True
+            )
+            latest = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(latest["hooks"]["PostToolUse"][0], foreign)
+            for event, owned_groups in CLAUDEX5_HOOK_GROUPS.items():
+                for owned in owned_groups:
+                    self.assertEqual(latest["hooks"][event].count(owned), 1)
+            self.assertNotIn("matcher", latest["hooks"]["TaskCreated"][0])
+            self.assertNotIn("matcher", latest["hooks"]["TaskCompleted"][0])
+
+            merge_claude_settings(path, enable_plugin=False)
+            downgraded = json.loads(path.read_text(encoding="utf-8"))
+            self.assertNotIn("TaskCreated", downgraded["hooks"])
+            self.assertNotIn("TaskCompleted", downgraded["hooks"])
+            self.assertEqual(downgraded["hooks"]["PostToolUse"][0], foreign)
+
     def test_uninstall_rolls_back_every_owned_file_after_an_intermediate_write_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
@@ -230,6 +271,96 @@ class ClaudeSettingsTests(unittest.TestCase):
 
             self.assertGreaterEqual(calls, 3)
             self.assertEqual({path: path.read_bytes() for path in targets}, originals)
+
+    def test_uninstall_rolls_back_if_post_removal_state_cannot_be_published(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / ".claude").mkdir()
+            (home / ".codex").mkdir()
+            claude_md = home / ".claude" / "CLAUDE.md"
+            claude_md.write_text(f"before\n{START_MARKER}\nmanaged\n{END_MARKER}\n")
+            (home / ".claude" / "settings.json").write_text("{}\n")
+            state_file = home / "state.tsv"
+            original = claude_md.read_bytes()
+            real_atomic_write = merge_config_module.atomic_write
+
+            def fail_state_publish(path, text, mode=None):
+                if path == state_file:
+                    raise OSError("injected state publication failure")
+                return real_atomic_write(path, text, mode)
+
+            with unittest.mock.patch.object(
+                merge_config_module, "atomic_write", side_effect=fail_state_publish
+            ):
+                with self.assertRaisesRegex(OSError, "state publication"):
+                    remove_harness_config(home, state_file)
+            self.assertEqual(claude_md.read_bytes(), original)
+
+    def test_install_aborts_without_overwriting_concurrent_foreign_setting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / ".claude").mkdir()
+            (home / ".codex").mkdir()
+            settings_path = home / ".claude" / "settings.json"
+            settings_path.write_text('{"foreign":"before"}\n', encoding="utf-8")
+            (home / ".codex" / "config.toml").write_text("", encoding="utf-8")
+            real_atomic_write = merge_config_module.atomic_write
+            changed = False
+
+            def inject_concurrent_edit(path, text, mode=None):
+                nonlocal changed
+                if path == settings_path and not changed:
+                    settings_path.write_text('{"foreign":"concurrent"}\n', encoding="utf-8")
+                    changed = True
+                return real_atomic_write(path, text, mode)
+
+            with unittest.mock.patch.object(
+                merge_config_module, "atomic_write", side_effect=inject_concurrent_edit
+            ):
+                with self.assertRaisesRegex(RuntimeError, "configuration changed concurrently"):
+                    merge_config_module.install_from_repository(
+                        home,
+                        Path(__file__).resolve().parents[1],
+                        harden=False,
+                    )
+
+            self.assertTrue(changed)
+            self.assertEqual(
+                json.loads(settings_path.read_text(encoding="utf-8")),
+                {"foreign": "concurrent"},
+            )
+            self.assertFalse((home / ".claude" / "CLAUDE.md").exists())
+            self.assertFalse((home / ".codex" / "AGENTS.md").exists())
+
+    def test_uninstall_state_uses_committed_payload_not_concurrent_edit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / ".claude").mkdir()
+            (home / ".codex").mkdir()
+            claude_md = home / ".claude" / "CLAUDE.md"
+            claude_md.write_text(f"before\n{START_MARKER}\nmanaged\n{END_MARKER}\n")
+            (home / ".claude" / "settings.json").write_text("{}\n")
+            state_file = home / "state.tsv"
+            real_atomic_write = merge_config_module.atomic_write
+
+            def concurrent_edit_after_write(path, text, mode=None):
+                result = real_atomic_write(path, text, mode)
+                if path == claude_md:
+                    claude_md.write_text("concurrent user change\n")
+                return result
+
+            with unittest.mock.patch.object(
+                merge_config_module, "atomic_write", side_effect=concurrent_edit_after_write
+            ):
+                remove_harness_config(home, state_file)
+
+            expected = hashlib.sha256(b"before\n").hexdigest()
+            published = dict(
+                (line.split("\t", 1)[0], line.split("\t", 1)[1])
+                for line in state_file.read_text().splitlines()
+            )
+            self.assertEqual(published[".claude/CLAUDE.md"], f"present\t{expected}")
+            self.assertEqual(claude_md.read_text(), "concurrent user change\n")
 
 
 class CodexConfigTests(unittest.TestCase):

@@ -58,6 +58,22 @@ def _task_response(payload: dict[str, Any]) -> dict[str, Any]:
     return task if isinstance(task, dict) else value
 
 
+def _task_metadata(subject: object, description: object) -> dict[str, object]:
+    result: dict[str, object] = {"kind": "task"}
+    if isinstance(subject, str) and subject:
+        result["label"] = sanitize_label(subject)
+    if isinstance(description, str) and description:
+        result["description"] = sanitize_label(description, limit=160)
+    return result
+
+
+def _first_string(*values: object) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
 def _dependencies(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -104,13 +120,31 @@ def normalize_hook(payload: object) -> list[dict[str, object]]:
         cwd = payload.get("cwd")
         if not isinstance(cwd, str) or not cwd:
             return []
-        return [_event("session.started", session_node, {"cwd": str(Path(cwd).expanduser().resolve(strict=False))})]
+        result: dict[str, object] = {"cwd": str(Path(cwd).expanduser().resolve(strict=False))}
+        session_title = payload.get("session_title")
+        if isinstance(session_title, str) and session_title:
+            result["title"] = sanitize_label(session_title)
+        return [_event("session.started", session_node, result)]
+
+    if hook_name in {"TaskCreated", "TaskCompleted"}:
+        identifier = _safe_identifier(payload.get("task_id"), "task:")
+        if identifier is None:
+            return []
+        return [
+            _event(
+                "task.created",
+                identifier,
+                _task_metadata(payload.get("task_subject"), payload.get("task_description")),
+            )
+        ]
 
     if hook_name == "PreToolUse" and payload.get("tool_name") == "TaskCreate":
         tool_input = _task_input(payload)
-        identifier = _safe_identifier(payload.get("tool_use_id"), "task:")
+        identifier = _safe_identifier(tool_input.get("taskId"), "task:")
         if identifier is None:
-            identifier = _safe_identifier(tool_input.get("taskId", tool_input.get("id")), "task:")
+            identifier = _safe_identifier(tool_input.get("id"), "task:")
+        if identifier is None:
+            identifier = _safe_identifier(payload.get("tool_use_id"), "task:compat-")
         if identifier is None:
             return []
         raw_label = tool_input.get("subject", tool_input.get("title"))
@@ -122,6 +156,35 @@ def normalize_hook(payload: object) -> list[dict[str, object]]:
             ),
         }
         return [_event("task.created", identifier, result)]
+
+    if hook_name == "PostToolUse" and payload.get("tool_name") == "TaskCreate":
+        tool_input = _task_input(payload)
+        response = _task_response(payload)
+        identifier = _safe_identifier(response.get("taskId"), "task:")
+        if identifier is None:
+            identifier = _safe_identifier(response.get("id"), "task:")
+        if identifier is None:
+            return []
+        result = _task_metadata(
+            _first_string(tool_input.get("subject"), tool_input.get("title"), response.get("subject"), response.get("title")),
+            _first_string(tool_input.get("description"), response.get("description")),
+        )
+        compatibility_id = _safe_identifier(payload.get("tool_use_id"), "task:compat-")
+        if compatibility_id is not None:
+            result["supersedes"] = compatibility_id
+        return [_event("task.created", identifier, result)]
+
+    if hook_name == "PostToolUse" and payload.get("tool_name") == "Agent":
+        tool_input = _task_input(payload)
+        tool_response = payload.get("tool_response")
+        response = tool_response if isinstance(tool_response, dict) else {}
+        identifier = _safe_identifier(response.get("agentId"), "agent:")
+        if identifier is None:
+            identifier = _safe_identifier(response.get("agent_id"), "agent:")
+        description = tool_input.get("description")
+        if identifier is None or not isinstance(description, str) or not description:
+            return []
+        return [_event("node.updated", identifier, {"description": sanitize_label(description, limit=160)})]
 
     if hook_name == "PostToolUse" and payload.get("tool_name") == "TaskUpdate":
         tool_input = _task_input(payload)
