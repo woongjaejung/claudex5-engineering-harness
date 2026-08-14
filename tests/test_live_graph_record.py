@@ -267,6 +267,25 @@ class HookNormalizationTests(unittest.TestCase):
             },
         )
 
+        code_review_agent = normalize_hook(
+            {
+                "hook_event_name": "SubagentStart",
+                "session_id": "session-1",
+                "agent_id": "agent-2",
+                "agent_type": "harness-code-reviewer",
+            }
+        )[0]
+        self.assertEqual(
+            code_review_agent["payload"],
+            {
+                "kind": "review",
+                "label": "harness-code-reviewer",
+                "role": "harness-code-reviewer",
+                "model": "claude-opus-5",
+                "effort": "high",
+            },
+        )
+
     def test_unknown_or_unsafe_hook_payload_is_ignored(self) -> None:
         self.assertEqual(normalize_hook(None), [])
         self.assertEqual(normalize_hook({"hook_event_name": "Unknown", "session_id": "session-1"}), [])

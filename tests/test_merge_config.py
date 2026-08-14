@@ -587,6 +587,7 @@ class TemplateTests(unittest.TestCase):
             "harness-implementer.md": "claude-sonnet-5",
             "harness-implementer-opus.md": "claude-opus-5",
             "harness-architecture-reviewer.md": "claude-opus-5",
+            "harness-code-reviewer.md": "claude-opus-5",
             "harness-judge.md": "claude-fable-5",
             "harness-judge-opus.md": "claude-opus-5",
         }
@@ -594,7 +595,7 @@ class TemplateTests(unittest.TestCase):
         actual = {path.name: self._frontmatter(path) for path in directory.glob("*.md")}
 
         self.assertEqual(set(actual), set(expected))
-        self.assertEqual(len({item["name"] for item in actual.values()}), 8)
+        self.assertEqual(len({item["name"] for item in actual.values()}), 9)
         for filename, model in expected.items():
             self.assertEqual(actual[filename]["model"], model)
             self.assertEqual(actual[filename]["effort"], "high")
@@ -669,10 +670,9 @@ class TemplateTests(unittest.TestCase):
             "harness-implementer",
             "harness-implementer-opus",
             "harness-architecture-reviewer",
+            "harness-code-reviewer",
             "harness-judge",
             "gpt-5.6-sol",
-            "gpt-5.6-luna",
-            "gpt-5.3-codex-spark",
             "fable-advisor",
             "Grok",
             "build",

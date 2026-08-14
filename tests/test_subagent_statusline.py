@@ -26,6 +26,7 @@ class SubagentStatusLineTests(unittest.TestCase):
             "harness-implementer": "Claude Sonnet 5 · high",
             "harness-implementer-opus": "Claude Opus 5 · high",
             "harness-architecture-reviewer": "Claude Opus 5 · high",
+            "harness-code-reviewer": "Claude Opus 5 · high",
             "harness-judge": "Claude Fable 5 · high",
             "harness-judge-opus": "Claude Opus 5 · high",
         }

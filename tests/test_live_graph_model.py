@@ -316,6 +316,7 @@ class SnapshotReductionTests(unittest.TestCase):
             "harness-implementer": ("claude-sonnet-5", "high"),
             "harness-implementer-opus": ("claude-opus-5", "high"),
             "harness-architecture-reviewer": ("claude-opus-5", "high"),
+            "harness-code-reviewer": ("claude-opus-5", "high"),
             "harness-judge": ("claude-fable-5", "high"),
             "harness-judge-opus": ("claude-opus-5", "high"),
             "harness-sol-plan-review": ("gpt-5.6-sol", "high"),

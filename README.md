@@ -27,10 +27,7 @@ You normally speak to Claude as usual. The global policy keeps small tasks direc
 ```mermaid
 flowchart TD
     U["Ordinary user request"] --> C{"Main Claude session classifies the task"}
-    C -->|"Simple question or tiny non-UI edit"| D["Handle directly"]
-    C -->|"One small existing-UI change"| SA{"Spark role installed?"}
-    SA -->|"Yes"| SP["Codex-Spark<br/>fast bounded UI iteration"]
-    SA -->|"No or run fails"| I
+    C -->|"Simple question or tiny low-risk edit"| D["Handle directly"]
     C -->|"Complex, ambiguous, multi-file, or risky"| W{"Superpowers workflow selected?"}
     W -->|"Yes"| SW["Superpowers owns process<br/>worktree · plan · task loop · checkpoints"]
     W -->|"No"| O["Main session coordinates the workflow"]
@@ -46,14 +43,11 @@ flowchart TD
     RR -->|"Blocking findings remain"| H["Stop before implementation<br/>ask the user"]
     E --> R["Claude Sonnet 5 high<br/>read-only research"]
     E --> I["Claude Sonnet 5 high<br/>primary implementation"]
-    E --> SR["Codex Sol high<br/>independent difficult-problem research"]
-    SR --> LI["Codex Luna max<br/>bounded alternative implementation"]
-    SP --> G
     I --> AR["Claude Opus 5 high<br/>architecture review"]
-    I --> NR["Codex Sol high<br/>normal review in fresh context"]
-    I --> XR["Codex Sol high<br/>adversarial review in fresh context"]
+    I --> CR["Claude Opus 5 high<br/>code review in fresh context"]
+    I --> XR["Codex Sol high<br/>adversarial review when risk warrants"]
     AR --> J["Claude Fable 5 high<br/>evidence judge"]
-    NR --> J
+    CR --> J
     XR --> J
     J --> G["Deterministic gate<br/>build · lint · typecheck · test"]
     G --> F["Main session inspects evidence and reports"]
@@ -64,7 +58,7 @@ The main session—not a nested subagent—is the coordinator because Claude Cod
 Superpowers and Claudex5 therefore complement each other:
 
 - Superpowers owns workflow mechanics: planning, worktrees, the task ledger, task-by-task execution, checkpoints, and review gates.
-- Claudex5 owns routing: researcher, implementer, optional Spark, Opus escalation, fresh Codex reviews, judge, and deterministic verification.
+- Claudex5 owns routing: researcher, implementer, Opus escalation, fresh Claude code review, the two conditional Codex Sol reviews, judge, and deterministic verification.
 - A competing routing plugin such as `fable-advisor` can replace this matrix. Verification detects it but never disables it automatically.
 
 ## Role matrix
@@ -75,22 +69,21 @@ Superpowers and Claudex5 therefore complement each other:
 |---|---|---|---|
 | Main coordinator | Current Claude session; Fable 5 high recommended | Owns requirements, routing, integration, and final verification | Automatic for complex work |
 | Plan reviewer | Codex Sol / high, fresh read-only context | Before implementation when a plan is complex or high risk | Automatic and conditional; one recheck maximum |
-| Researcher | Claude Sonnet 5 / high | Repository exploration before unclear implementation | Automatic when useful |
-| Implementer | Claude Sonnet 5 / high | Primary scoped implementation | Automatic |
-| Fast UI iteration | Codex-Spark | One small change to an existing UI, only when account access is confirmed | Automatic and conditional; Sonnet fallback |
+| Researcher | Claude Sonnet 5 / high | Repository exploration before unclear implementation, and independent difficult-problem analysis in a fresh context | Automatic when useful |
+| Implementer | Claude Sonnet 5 / high | Primary scoped implementation, including small existing-UI changes | Automatic |
 | Implementer escalation | Claude Opus 5 / high | Sonnet is demonstrably blocked or a change is unusually risky | Manual fallback |
-| Independent research | Codex Sol / high | Alternative diagnosis or difficult-problem analysis | Automatic when materially useful |
-| Alternative implementation | Codex Luna / max | Only when files, behavior, and acceptance criteria are bounded | Explicit routing recommended |
 | Architecture reviewer | Claude Opus 5 / high | Meaningful structural changes | Automatic for complex work |
-| Normal reviewer | Codex Sol / high | Correctness and regression review | Automatic for meaningful changes |
+| Normal reviewer | Claude Opus 5 / high | Correctness and regression review in a fresh context | Automatic for meaningful changes |
 | Adversarial reviewer | Codex Sol / high | Failure modes, trust boundaries, races, rollback | Risk-based |
 | Judge | Claude Fable 5 / high | Reconciles review evidence | Automatic for complex/release work |
 | Judge fallback | Claude Opus 5 / high | Fable unavailable or evidence conflict is high risk | Manual fallback |
 | Quality gate | Ordinary project tools | Build, lint, typecheck, and test | Always before completion when available |
 
-Model availability depends on your Claude/ChatGPT plan and installed CLI versions. Opus fallbacks are intentionally manual because they change cost and behavior. Spark is the exception: if it is unavailable, the bounded UI route falls back to Sonnet automatically.
+Model availability depends on your Claude/ChatGPT plan and installed CLI versions. Opus fallbacks are intentionally manual because they change cost and behavior.
 
-During the current research preview, [OpenAI documents Codex-Spark as a ChatGPT Pro feature](https://learn.chatgpt.com/docs/agent-configuration/speed). The installer does not guess the plan name. It calls the official App Server [`model/list`](https://learn.chatgpt.com/docs/app-server) method and enables Spark only when the authenticated account exposes the exact `gpt-5.3-codex-spark` model. This check starts no model turn and stores no account or model-catalog data.
+Codex roles other than the plan reviewer and the adversarial reviewer (`harness_sol_research`, `harness_luna_implementation`, `harness_sol_review`, and account-gated `harness_spark_ui_iteration`) remain installed as manual escape hatches. Automatic routing never selects them; name one explicitly when you want it.
+
+During the current research preview, [OpenAI documents Codex-Spark as a ChatGPT Pro feature](https://learn.chatgpt.com/docs/agent-configuration/speed). The installer does not guess the plan name. It calls the official App Server [`model/list`](https://learn.chatgpt.com/docs/app-server) method and enables the manual Spark role only when the authenticated account exposes the exact `gpt-5.3-codex-spark` model. This check starts no model turn and stores no account or model-catalog data.
 
 ## Requirements
 
@@ -186,10 +179,11 @@ Running Claudex5 Claude subagents show their role, configured model, effort, and
 harness-researcher [Claude Sonnet 5 · high] · Trace authentication flow
 harness-implementer [Claude Sonnet 5 · high] · Implement Task 1
 harness-architecture-reviewer [Claude Opus 5 · high] · Review module boundaries
+harness-code-reviewer [Claude Opus 5 · high] · Review Task 1 for regressions
 harness-judge [Claude Fable 5 · high] · Reconcile review evidence
 ```
 
-Open `/agents` to inspect running subagents or `/tasks` to inspect background work in the current Claude Code session. The renderer overrides only exact `harness-*` Claudex5 roles; Superpowers and third-party agents keep Claude Code's default rows. Official Codex plugin work is not a Claude custom subagent, so Claudex5 instead prefixes its visible task description with `[Codex Sol · high]`, `[Codex Luna · max]`, or `[Codex-Spark]` when that interface provides a description.
+Open `/agents` to inspect running subagents or `/tasks` to inspect background work in the current Claude Code session. The renderer overrides only exact `harness-*` Claudex5 roles; Superpowers and third-party agents keep Claude Code's default rows. Official Codex plugin work is not a Claude custom subagent, so Claudex5 instead prefixes its visible task description with `[Codex Sol · high]` when that interface provides a description; manual escape-hatch runs use `[Codex Luna · max]` or `[Codex-Spark]`.
 
 Good prompts still improve routing because they provide an outcome and constraints:
 
@@ -198,14 +192,7 @@ Implement the payment retry logic while preserving API compatibility.
 Review concurrent requests and partial failures, then report the test results.
 ```
 
-A narrow UI request naturally qualifies for Spark when it is installed:
-
-```text
-In the existing settings dialog, reduce the Save button's top spacing to match the other form actions.
-Do not change behavior or data flow, and verify the result in the browser.
-```
-
-If Spark is not available on that computer or server, the same request continues with the Sonnet implementer. Ordinary automatic routing does not stop merely because the optional model is absent.
+Small UI changes stay on the Sonnet implementer like any other scoped work. The account-gated Spark role never runs automatically; request it by name when you want a fast bounded UI pass and the role is installed.
 
 ## Live node-and-edge dashboard
 
@@ -299,13 +286,13 @@ For an automatically managed, graph-visible invocation, place the prompt in a te
 
 ```bash
 claudex5 codex-run \
-  --role harness_sol_review \
-  --label "[Codex Sol · high] Independent review" \
+  --role harness_sol_adversarial_review \
+  --label "[Codex Sol · high] Adversarial review" \
   --sandbox read-only \
   --prompt-file /path/to/review-prompt.txt
 ```
 
-Available role identifiers are `harness_sol_plan_review`, `harness_sol_research`, `harness_luna_implementation`, `harness_sol_review`, `harness_sol_adversarial_review`, and conditionally `harness_spark_ui_iteration`. The wrapper fixes the role's model and effort, passes the prompt only through standard input, records lifecycle metadata, forwards termination signals, and returns the child process status.
+Available role identifiers are `harness_sol_plan_review`, `harness_sol_research`, `harness_luna_implementation`, `harness_sol_review`, `harness_sol_adversarial_review`, and conditionally `harness_spark_ui_iteration`. Only `harness_sol_plan_review` and `harness_sol_adversarial_review` are routed automatically; the others are manual escape hatches. The wrapper fixes the role's model and effort, passes the prompt only through standard input, records lifecycle metadata, forwards termination signals, and returns the child process status.
 
 Inside Claude Code, use the official plugin commands:
 
@@ -360,10 +347,9 @@ Automatic:
 
 - Task complexity classification
 - Conditional fresh Codex Sol plan review before complex or high-risk implementation
-- Account-aware Spark routing for one small existing-UI change, with automatic Sonnet fallback
 - Read-only research before unclear implementation
 - Sonnet implementation for scoped work
-- Independent review for meaningful changes
+- Fresh Claude Opus code review for meaningful changes, plus a Codex Sol adversarial review when risk warrants it
 - Repository build/lint/typecheck/test discovery and execution
 - Preservation and inspection of delegated results
 - Superpowers compatibility routing when `subagent-driven-development` or `executing-plans` is selected
@@ -373,7 +359,7 @@ Manual or explicitly confirmed:
 - Proceeding with a high-risk plan when independent Sol plan review is unavailable or remains blocked after one recheck
 - Fable → Opus fallback
 - Sonnet implementer → Opus implementer escalation
-- Luna alternative implementation when the task is not already tightly bounded
+- Every Codex role other than the two Sol reviews: Sol research, Sol normal review, Luna alternative implementation, and Spark UI iteration
 - `--harden`, because it changes pre-existing trust and warning settings
 - Subscription login on every new machine
 
@@ -464,7 +450,7 @@ codex login status
 ./verify.sh
 ```
 
-`verify.sh` warns when current Spark access and the installed role disagree. A temporary network or authentication failure does not break installation; Sonnet remains the fallback. If access is later restored, rerun the installer.
+`verify.sh` warns when current Spark access and the installed role disagree. A temporary network or authentication failure does not break installation; the manual Spark role simply stays disabled while ordinary Sonnet implementation continues. If access is later restored, rerun the installer.
 
 If Codex Sol is unavailable during a plan review, the harness must disclose that the plan was not independently validated. A routine task may continue without the optional gate. For a high-risk plan, choose whether to wait for Sol, proceed without independent validation, or request a manual Opus review; the harness must not make that choice silently.
 

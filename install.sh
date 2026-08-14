@@ -67,7 +67,7 @@ fi
 
 enable_spark=0
 if [[ "$skip_runtime" -eq 1 ]]; then
-  claudex5_info "Spark availability check skipped; the Sonnet fallback remains active"
+  claudex5_info "Spark availability check skipped; the manual Spark role stays disabled"
 else
   set +e
   spark_state="$(HOME="$target_home" "$python_bin" "$repo_root/scripts/spark_probe.py" \
@@ -76,11 +76,11 @@ else
   set -e
   if [[ "$spark_probe_status" -eq 0 && "$spark_state" == "available" ]]; then
     enable_spark=1
-    claudex5_info "Codex-Spark access confirmed; enabling bounded UI iteration"
+    claudex5_info "Codex-Spark access confirmed; enabling the manual Spark role"
   elif [[ "$spark_probe_status" -eq 1 && "$spark_state" == "unavailable" ]]; then
-    claudex5_info "Codex-Spark is not available for this account; the Sonnet fallback remains active"
+    claudex5_info "Codex-Spark is not available for this account; the manual Spark role stays disabled"
   else
-    claudex5_warn "Codex-Spark availability could not be confirmed; the Sonnet fallback remains active"
+    claudex5_warn "Codex-Spark availability could not be confirmed; the manual Spark role stays disabled"
   fi
 fi
 

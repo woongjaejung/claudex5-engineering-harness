@@ -22,7 +22,7 @@ claude
 둘의 책임은 다음처럼 나뉩니다.
 
 - Superpowers: 계획, 작업공간(worktree), 작업 원장, 태스크 반복, 체크포인트, 리뷰 게이트
-- Claudex5: 계획 검증자·조사자·구현자·리뷰어·판정자와 각 모델 선택, Spark 조건부 사용, 최종 실제 테스트
+- Claudex5: 계획 검증자·조사자·구현자·리뷰어·판정자와 각 모델 선택, 최종 실제 테스트. 일상 작업은 Claude 역할이 수행하고, Codex는 조건부인 Sol 계획 검증과 Sol 적대적 리뷰 두 가지만 자동으로 맡습니다.
 
 Superpowers가 `subagent-driven-development` 또는 `executing-plans`를 선택하면 전역 지침이 `claudex5-subagent-routing`을 자동으로 로드합니다. 사용자는 평소처럼 “1번 방식으로 오케스트레이션해줘”라고 말하면 되고, 실행 방식을 두 번 고를 필요가 없습니다.
 
@@ -34,12 +34,13 @@ Claudex5 Claude 서브에이전트는 실행 목록에 역할, 모델, 추론 �
 harness-researcher [Claude Sonnet 5 · high] · 인증 흐름 조사
 harness-implementer [Claude Sonnet 5 · high] · Task 1 구현
 harness-architecture-reviewer [Claude Opus 5 · high] · 구조 검토
+harness-code-reviewer [Claude Opus 5 · high] · Task 1 회귀 검토
 harness-judge [Claude Fable 5 · high] · 리뷰 근거 판정
 ```
 
 Claude Code에서 `/agents`를 열면 실행 중인 서브에이전트를, `/tasks`를 열면 현재 세션의 백그라운드 작업을 확인할 수 있습니다. 이 표시는 이름이 정확히 `harness-*`인 Claudex5 역할에만 적용되므로 Superpowers와 다른 플러그인 에이전트의 기본 표시는 바뀌지 않습니다.
 
-공식 Codex 플러그인의 Sol·Luna·Spark 작업은 Claude 커스텀 서브에이전트가 아니므로 같은 상태줄 매핑을 사용하지 않습니다. 대신 호출 화면이 작업 설명을 지원하면 `[Codex Sol · high]`, `[Codex Luna · max]`, `[Codex-Spark]` 접두사를 붙입니다.
+공식 Codex 플러그인 작업은 Claude 커스텀 서브에이전트가 아니므로 같은 상태줄 매핑을 사용하지 않습니다. 대신 호출 화면이 작업 설명을 지원하면 자동 라우팅은 `[Codex Sol · high]` 접두사를 붙이고, 수동 호출 시에만 `[Codex Luna · max]`, `[Codex-Spark]` 접두사를 사용합니다.
 
 ## 구현 전 계획 검증
 
@@ -125,25 +126,18 @@ codex login --device-auth
 Claude와 ChatGPT 로그인은 각 머신에서 한 번씩 직접 해야 합니다. 다른 컴퓨터의 인증 파일은 새 컴퓨터나 서버로 복사되지 않습니다.
 인증 뒤 `./install.sh`를 한 번 더 실행하는 이유는 계정별 Spark 접근 가능 여부를 그때 처음 정확히 확인할 수 있기 때문입니다.
 
-## Pro 계정의 Spark 자동 사용
+## Spark 역할 (수동 escape hatch)
 
 Spark의 정확한 모델 식별자는 `gpt-5.3-codex-spark`입니다. 현재 연구 프리뷰에서는 ChatGPT Pro 계정에만 제공되지만, 하네스는 인증 파일에서 구독 이름을 읽거나 추측하지 않습니다. 대신 Codex의 공식 `model/list` 기능으로 현재 계정에 이 모델이 실제 표시되는지만 확인합니다.
 
-- Spark가 표시되면 `harness_spark_ui_iteration` 전역 역할을 자동 등록합니다.
-- Spark가 없거나 확인에 실패하면 설치는 정상 완료되고 Sonnet 구현 역할을 사용합니다.
+- Spark가 표시되면 `harness_spark_ui_iteration` 전역 역할을 등록합니다.
+- Spark가 없거나 확인에 실패해도 설치는 정상 완료됩니다.
 - 확인 과정에서는 모델에게 프롬프트를 보내지 않으므로 Spark 사용량을 소비하지 않습니다.
 - 모델 목록, 구독 정보, 토큰은 파일에 저장하거나 Git에 포함하지 않습니다.
 
-Spark가 자동 배정되는 범위는 기존 화면의 작고 명확한 수정 한 가지입니다. 예를 들면 간격, 문구, 버튼 상태 또는 좁은 시각적 오류를 고치고 브라우저로 확인하는 작업입니다. 백엔드 로직, 구조 설계, 보안 기능, 데이터 마이그레이션, 큰 리팩터링과 코드 리뷰에는 사용하지 않습니다.
+자동 라우팅은 Spark를 사용하지 않습니다. 작은 UI 수정도 다른 범위 있는 작업과 똑같이 Sonnet 구현자가 처리합니다. Spark는 역할이 등록된 머신에서 사용자가 이름을 직접 지정할 때만, 기존 화면의 작고 명확한 수정 한 가지에 한해 사용합니다. 백엔드 로직, 구조 설계, 보안 기능, 데이터 마이그레이션, 큰 리팩터링과 코드 리뷰에는 사용하지 않습니다.
 
-평소처럼 다음과 같이 요청하면 됩니다.
-
-```text
-기존 설정 창에서 저장 버튼 위 간격만 다른 입력 영역과 맞춰줘.
-동작과 데이터 흐름은 바꾸지 말고 브라우저에서 확인해줘.
-```
-
-Spark가 등록된 머신에서 명시적으로 호출하려면 Claude Code 안에서 다음처럼 요청할 수 있습니다.
+명시적으로 호출하려면 Claude Code 안에서 다음처럼 요청할 수 있습니다.
 
 ```text
 /codex:rescue --fresh --model spark 기존 프로필 카드의 간격 한 곳만 수정하고 동작은 유지한 채 브라우저에서 검증해줘.
@@ -175,8 +169,8 @@ harness_spark_ui_iteration 역할로 기존 UI의 이 한 가지 변경만 처�
 
 - 먼저 읽기 전용 조사가 필요한가
 - 구현 범위가 명확한가
-- 독립 Codex 분석이 정확도를 높이는가
-- 구조 검토나 공격적 검토가 필요한가
+- 새 맥락의 독립 분석이 정확도를 높이는가
+- 구조 검토, 새 맥락 코드 리뷰, 또는 Codex Sol 적대적 검토가 필요한가
 - 완료 전에 어떤 실제 테스트를 실행해야 하는가
 
 ## 역할을 직접 지정할 때
@@ -203,13 +197,13 @@ Claude Code 안에서 Codex를 새 맥락으로 호출:
 
 ```bash
 claudex5 codex-run \
-  --role harness_sol_review \
-  --label "[Codex Sol · high] 독립 리뷰" \
+  --role harness_sol_adversarial_review \
+  --label "[Codex Sol · high] 적대적 리뷰" \
   --sandbox read-only \
   --prompt-file /path/to/review-prompt.txt
 ```
 
-사용 가능한 역할은 `harness_sol_plan_review`, `harness_sol_research`, `harness_luna_implementation`, `harness_sol_review`, `harness_sol_adversarial_review`, 그리고 조건부 `harness_spark_ui_iteration`입니다. 래퍼는 모델과 추론 수준을 고정하고 프롬프트를 저장하지 않으며 종료 신호와 실제 종료 상태를 그대로 전달합니다.
+사용 가능한 역할은 `harness_sol_plan_review`, `harness_sol_research`, `harness_luna_implementation`, `harness_sol_review`, `harness_sol_adversarial_review`, 그리고 조건부 `harness_spark_ui_iteration`입니다. 이 중 자동 라우팅이 사용하는 것은 `harness_sol_plan_review`와 `harness_sol_adversarial_review` 둘뿐이며, 나머지는 사용자가 이름을 직접 지정할 때만 쓰는 수동 escape hatch입니다. 래퍼는 모델과 추론 수준을 고정하고 프롬프트를 저장하지 않으며 종료 신호와 실제 종료 상태를 그대로 전달합니다.
 
 ```text
 /codex:rescue --fresh --model gpt-5.6-sol --effort high [Codex Sol · high] Plan review: 전체 구현 계획을 읽기 전용으로 검토하고 APPROVE 또는 NEEDS CHANGES로 답해줘.
@@ -243,9 +237,8 @@ harness_sol_plan_review 역할을 새 읽기 전용 맥락으로 사용해서 �
 
 - 작업 규모와 위험도 분류
 - 복잡하거나 위험한 계획의 구현 전 Codex Sol 독립 검증
-- 접근 가능할 때만 작은 기존 UI 수정에 Spark 사용, 불가능하면 Sonnet으로 자동 전환
 - 필요한 경우 Sonnet 조사·구현 역할 호출
-- 의미 있는 변경에 대한 독립 검토
+- 의미 있는 변경에 대한 새 맥락 Claude Opus 코드 리뷰와, 위험도가 높을 때 Codex Sol 적대적 검토
 - build, lint, typecheck, test 실행
 - 서브에이전트 결과의 실제 파일 대조
 
@@ -254,7 +247,7 @@ harness_sol_plan_review 역할을 새 읽기 전용 맥락으로 사용해서 �
 - Sol 계획 검증이 불가능하거나 한 번의 재검토 뒤에도 막혔을 때 기다릴지, 독립 검증 없이 진행할지, Opus 검토로 대체할지 선택
 - Fable 오케스트레이터 또는 판정자가 unavailable일 때 Opus 전환
 - Sonnet 구현이 근거와 함께 막혔을 때 Opus 구현 승격
-- 범위가 애매한 상태에서 Luna에게 구현을 맡기는 결정
+- 두 가지 Sol 리뷰를 제외한 모든 Codex 역할 사용: Sol 독립 조사, Sol 일반 리뷰, Luna 대안 구현, Spark UI 수정
 - 기존 신뢰 설정을 바꾸는 `--harden`
 - 새 머신의 Claude/ChatGPT 로그인
 
@@ -358,6 +351,6 @@ codex login status
 ./verify.sh
 ```
 
-일시적인 네트워크 또는 인증 확인 실패는 설치 실패로 처리하지 않습니다. 그동안 Sonnet 대체 경로가 유지되며, 접근이 복구된 뒤 설치를 다시 실행하면 Spark 역할이 활성화됩니다.
+일시적인 네트워크 또는 인증 확인 실패는 설치 실패로 처리하지 않습니다. 그동안 수동 Spark 역할만 비활성 상태로 남고 일반 Sonnet 구현은 그대로 진행되며, 접근이 복구된 뒤 설치를 다시 실행하면 Spark 역할이 활성화됩니다.
 
 전체 구조, 백업 복구, 보안 경계와 기여 방법은 루트 [README](../README.md)를 참고하세요.

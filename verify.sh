@@ -179,6 +179,7 @@ expected_links=(
   "$target_home/.claude/agents/harness-researcher.md:$repo_root/claude/agents/harness-researcher.md"
   "$target_home/.claude/agents/harness-implementer.md:$repo_root/claude/agents/harness-implementer.md"
   "$target_home/.claude/agents/harness-architecture-reviewer.md:$repo_root/claude/agents/harness-architecture-reviewer.md"
+  "$target_home/.claude/agents/harness-code-reviewer.md:$repo_root/claude/agents/harness-code-reviewer.md"
   "$target_home/.claude/agents/harness-judge.md:$repo_root/claude/agents/harness-judge.md"
   "$target_home/.codex/agents/harness-sol-research.toml:$repo_root/codex/agents/harness-sol-research.toml"
   "$target_home/.codex/agents/harness-sol-plan-review.toml:$repo_root/codex/agents/harness-sol-plan-review.toml"
@@ -402,7 +403,7 @@ if command -v codex >/dev/null 2>&1; then
       if [[ "$spark_installed" -eq 1 ]]; then
         warn "Codex-Spark is no longer available but its role is enabled; rerun ./install.sh"
       else
-        pass "Codex-Spark is unavailable and the Sonnet fallback is active"
+        pass "Codex-Spark is unavailable and its manual role is disabled"
       fi
     else
       warn "Codex-Spark availability could not be confirmed; installed state was left unchanged"

@@ -33,6 +33,7 @@ ROLE_METADATA: dict[str, dict[str, str]] = {
     "harness-implementer": {"model": "claude-sonnet-5", "effort": "high"},
     "harness-implementer-opus": {"model": "claude-opus-5", "effort": "high"},
     "harness-architecture-reviewer": {"model": "claude-opus-5", "effort": "high"},
+    "harness-code-reviewer": {"model": "claude-opus-5", "effort": "high"},
     "harness-judge": {"model": "claude-fable-5", "effort": "high"},
     "harness-judge-opus": {"model": "claude-opus-5", "effort": "high"},
     "harness-sol-plan-review": {"model": "gpt-5.6-sol", "effort": "high"},

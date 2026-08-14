@@ -87,7 +87,7 @@ def _dependencies(value: object) -> list[str]:
 
 
 def _agent_kind(role: str) -> str:
-    if role == "harness-architecture-reviewer":
+    if role in {"harness-architecture-reviewer", "harness-code-reviewer"}:
         return "review"
     if role in {"harness-judge", "harness-judge-opus"}:
         return "judge"
