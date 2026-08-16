@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -95,6 +96,161 @@ class SubagentStatusLineTests(unittest.TestCase):
         )
         self.assertNotIn("\x1b", result.stdout)
         self.assertEqual(rows[1]["content"], "harness-judge [Claude Fable 5 · high]")
+
+    def test_payload_model_and_effort_override_the_fixed_role_mapping(self):
+        payload = {
+            "tasks": [
+                {
+                    "id": "override",
+                    "name": "harness-code-reviewer",
+                    "description": "review",
+                    "model": "claude-sonnet-5",
+                    "effort": "high",
+                },
+            ]
+        }
+
+        result = self.run_renderer(json.dumps(payload))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [json.loads(line) for line in result.stdout.splitlines()],
+            [
+                {
+                    "id": "override",
+                    "content": "harness-code-reviewer [Claude Sonnet 5 · high] · review",
+                }
+            ],
+        )
+
+    def test_unknown_agents_with_a_resolved_model_get_a_labeled_row(self):
+        payload = {
+            "tasks": [
+                {
+                    "id": "resolved",
+                    "name": "general-purpose",
+                    "description": "task",
+                    "model": "claude-opus-5",
+                },
+                {
+                    "id": "numeric-effort",
+                    "name": "Explore",
+                    "model": "claude-haiku-4-5-20251001",
+                    "effort": 8192,
+                },
+                {"id": "unresolved", "name": "general-purpose", "description": "task"},
+            ]
+        }
+
+        result = self.run_renderer(json.dumps(payload))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [json.loads(line) for line in result.stdout.splitlines()],
+            [
+                {
+                    "id": "resolved",
+                    "content": "general-purpose [Claude Opus 5] · task",
+                },
+                {
+                    "id": "numeric-effort",
+                    "content": "Explore [Claude Haiku 4.5 · 8192]",
+                },
+            ],
+        )
+
+    def test_nameless_payload_from_claude_code_2_1_233_still_shows_the_model(self):
+        # Real captured shape: 2.1.233 omits "name"; the panel prints the
+        # subagent name as a fixed prefix, so the body starts at the label.
+        payload = {
+            "columns": 130,
+            "tasks": [
+                {
+                    "id": "a0aed344c22e8c26a",
+                    "type": "local_agent",
+                    "status": "running",
+                    "description": "Final fix wave (review findings)",
+                    "label": "Final fix wave (review findings)",
+                    "model": "claude-sonnet-5",
+                    "tokenCount": 10213,
+                },
+                {
+                    "id": "unresolved-nameless",
+                    "type": "local_agent",
+                    "status": "running",
+                    "description": "starting up",
+                },
+            ]
+        }
+
+        result = self.run_renderer(json.dumps(payload))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [json.loads(line) for line in result.stdout.splitlines()],
+            [
+                {
+                    "id": "a0aed344c22e8c26a",
+                    "content": "[Claude Sonnet 5] · Final fix wave (review findings)",
+                }
+            ],
+        )
+
+    def test_agent_name_is_recovered_from_the_task_transcript(self):
+        # 2.1.233 payloads omit the name, and a custom row replaces the whole
+        # body — so the renderer reads it back from the subagent transcript.
+        with tempfile.TemporaryDirectory() as root:
+            transcript = Path(root) / "session-1.jsonl"
+            transcript.write_text("{}\n")
+            subagents = Path(root) / "session-1" / "subagents"
+            subagents.mkdir(parents=True)
+            entries = [
+                {"type": "user", "agentId": "abc123"},
+                {"type": "assistant", "attributionAgent": "harness-implementer"},
+            ]
+            (subagents / "agent-abc123.jsonl").write_text(
+                "\n".join(json.dumps(entry) for entry in entries) + "\n"
+            )
+            payload = {
+                "transcript_path": str(transcript),
+                "tasks": [
+                    {
+                        "id": "abc123",
+                        "type": "local_agent",
+                        "status": "running",
+                        "description": "Implement model profiles switch",
+                        "model": "claude-sonnet-5",
+                        "effort": "high",
+                    },
+                    {
+                        "id": "no-transcript",
+                        "type": "local_agent",
+                        "status": "running",
+                        "description": "starting",
+                        "model": "claude-opus-5",
+                    },
+                ],
+            }
+
+            result = self.run_renderer(json.dumps(payload))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [json.loads(line) for line in result.stdout.splitlines()],
+            [
+                {
+                    "id": "abc123",
+                    "content": (
+                        "harness-implementer [Claude Sonnet 5 · high]"
+                        " · Implement model profiles switch"
+                    ),
+                },
+                {
+                    "id": "no-transcript",
+                    "content": "[Claude Opus 5] · starting",
+                },
+            ],
+        )
 
     def test_malformed_input_fails_without_echoing_it(self):
         sensitive_invalid_input = '{"tasks": ["private-value"}'
